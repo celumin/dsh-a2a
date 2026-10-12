@@ -1,0 +1,45 @@
+# dsh-a2a 加载示例 —— 追加到 profile 的 cordis.patch.yml
+#
+# 验证：安装启动后
+#   curl http://127.0.0.1:7310/.well-known/agent-card.json
+#   curl -X POST http://127.0.0.1:7310/ -H "Content-Type: application/json" \
+#     -d '{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}],"messageId":"m1"}}}'
+
+# ── 方式一：agent 模式（默认，A2A 消息转交给完整 DSH agent 会话） ──────
+- id: a2a
+  name: dsh-a2a
+  config:
+    port: 7310
+    mode: agent
+    # workspace: D:\DSHProjects        # 自动创建会话的工作目录（默认 process.cwd()）
+    # agentPreset: standard            # 预设 id（默认跟随 GUI 默认预设）
+    # agentId: main                    # 或固定复用 ctx.agents 中某个既有会话
+    # persistSessions: true            # contextId → 会话映射落盘，重启后延续上下文
+
+# ── 方式二：llm 模式（自包含轻量回复，不建 agent 会话） ────────────────
+# - id: a2a
+#   name: dsh-a2a
+#   config:
+#     port: 7310
+#     mode: llm
+#     provider: deepseek-official
+#     model: deepseek-v4-flash
+#     systemPrompt: 你是通过 A2A 协议提供服务的智能助手，用简洁中文回答。
+
+# ── 方式三：echo 模式（回显原文，先验证链路打通） ──────────────────────
+# - id: a2a
+#   name: dsh-a2a
+#   config:
+#     port: 7310
+#     mode: echo
+
+# ── 加固（可选）：Bearer 鉴权 + 公网地址 ───────────────────────────────
+# - id: a2a
+#   name: dsh-a2a
+#   config:
+#     port: 7310
+#     host: 0.0.0.0
+#     publicUrl: https://a2a.example.com/    # 写进 Agent Card 的 url 字段
+#     bearerToken: 'env:A2A_TOKEN'           # 环境变量引用，密钥不落盘
+#     turnTimeoutMs: 600000                  # 单轮上限，超时任务置 failed
+#     taskTtlMs: 3600000                     # 已完结任务的内存保留时长

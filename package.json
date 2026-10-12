@@ -1,0 +1,63 @@
+{
+  "name": "dsh-a2a",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 插件：A2A（Agent2Agent）协议双向支持 — 把 DSH agent 暴露为标准 A2A 服务器（Agent Card + JSON-RPC message/send、message/stream SSE、tasks/get、tasks/cancel），并提供 a2a_* 工具让 agent 调用远端 A2A agent",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:core": "tsc -p tsconfig.test.json",
+    "verify": "tsc -p tsconfig.local.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node tests/smoke.mjs",
+    "prepack": "tsc -p tsconfig.json"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "a2a",
+    "agent2agent",
+    "agent-card",
+    "json-rpc",
+    "interop"
+  ],
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.5",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zyfgood/dsh-a2a.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

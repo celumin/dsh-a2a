@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/protocol.ts",
+    "src/store.ts",
+    "src/server.ts",
+    "src/client.ts"
+  ]
+}
