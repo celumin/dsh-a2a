@@ -2,10 +2,11 @@
 #
 # 通过官方 CLI 安装时——
 #
-#   dsh plugin --profile <name> add "github:zyfgood/dsh-a2a#main&path:/"
+#   dsh plugin --profile <name> add github:zyfgood/dsh-a2a
 #
 # ——CLI 会把本包加入 profile 的 bundle 栈；profile 启动时合并此 patch
 #（单行 insert 插件行），无需手工编辑 cordis.yml。
+# lib/ 预构建产物随仓库发布，安装即用，无需构建脚本。
 #
 # 启动后 DSH agent 即作为 A2A 服务器暴露在本机（默认 127.0.0.1:7310）：
 #   Agent Card:  http://127.0.0.1:7310/.well-known/agent-card.json

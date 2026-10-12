@@ -1,6 +1,6 @@
 # dsh-a2a
 
-[DSH（DeepSeek Harness）](https://github.com/zyfgood/dsh-feishu-bot) 的 **A2A（Agent2Agent）协议**插件。
+DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件。
 
 DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼图，**双向**打通 A2A 生态（Google ADK、a2ajava / a2a-python SDK、各类 agent 网关）：
 
@@ -13,19 +13,21 @@ DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼�
   - `a2a_discover` / `a2a_send` / `a2a_task_status` / `a2a_cancel`
   - 地址白名单（`clientAllowPatterns`）控制 agent 可呼叫的目标
 
-零运行时依赖（纯 Node ≥20 stdlib + 全局 fetch），与 [dsh-feishu-bot](../dsh-feishu-bot) 同一插件体系。
+零运行时依赖（纯 Node ≥20 stdlib + 全局 fetch），与 [dsh-feishu-bot](https://github.com/zyfgood/dsh-feishu-bot) 同一插件体系。
 
 ## 一、安装
 
 ```bash
 # 官方 CLI 一键安装（bundle patch 自动挂载）
-dsh plugin --profile <name> add "github:zyfgood/dsh-a2a#main&path:/"
+dsh plugin --profile <name> add github:zyfgood/dsh-a2a
 
 # 或本地路径
-dsh plugin --profile <name> add "file:D:/DSHProjects/dsh-a2a"
+dsh plugin --profile <name> add file:D:/DSHProjects/dsh-a2a
 ```
 
 重启 profile 后生效。默认监听 `127.0.0.1:7310`。
+
+> `lib/` 预构建产物随仓库发布，安装即用，无需构建脚本（无 pnpm ≥10 的 `allowBuilds` 步骤）。
 
 ## 二、快速验证
 
@@ -121,6 +123,7 @@ profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
 ```bash
 pnpm verify   # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
 pnpm test     # 构建 DSH 无关核心 + 31 项端到端冒烟测试
+pnpm build:local  # 本地全量构建 lib/（shims 类型校验，产物与宿主构建一致）
 pnpm build    # 完整构建（需要宿主环境提供 @deepseek-ai/* peer 依赖）
 ```
 
