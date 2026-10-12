@@ -12,6 +12,11 @@ DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼�
 - **客户端方向（出站）**：注册 `a2a_*` 模型工具，让任意 DSH agent 直接呼叫远端 A2A agent
   - `a2a_discover` / `a2a_send` / `a2a_task_status` / `a2a_cancel`
   - 地址白名单（`clientAllowPatterns`）控制 agent 可呼叫的目标
+- **可视化运维面板**（Web client 半，v0.2.0）：Plugins → dsh-a2a 的配置卡与设置 Plugins 分区的 A2A 标签页
+  - 服务器状态：运行中/模式/地址/协议版本/鉴权 + curl 验证命令一键复制
+  - 实时任务板：最近任务的状态徽标/上下文/产物数，非终态任务一键取消（5s 自动刷新）
+  - 远端 agent 目录：保存常用远端地址，浏览器直连拉取其 Agent Card（名称/版本/技能）
+  - 数据来自 A2A 服务器自带的 `/admin/status`、`/admin/tasks` 端点（Bearer 门禁同 JSON-RPC）
 
 零运行时依赖（纯 Node ≥20 stdlib + 全局 fetch），与 [dsh-feishu-bot](https://github.com/zyfgood/dsh-feishu-bot) 同一插件体系。
 
@@ -134,11 +139,13 @@ src/
 ├── index.ts       插件入口：Config schema + apply()
 ├── protocol.ts    A2A 类型 / JSON-RPC / Agent Card（纯函数，零依赖）
 ├── store.ts       任务存储 + SSE 事件中枢（事件缓冲、订阅、TTL）
-├── server.ts      HTTP 服务器：card / message/send / message/stream(SSE) / tasks/*
+├── server.ts      HTTP 服务器：card / message/send / message/stream(SSE) / tasks/* / admin/*
 ├── bridge.ts      DSH 桥接：echo / llm / agent 三种 TaskRunner
 ├── client.ts      出站 A2A 客户端（fetch + SSE 解析）
 ├── tools.ts       a2a_* 模型工具注册
 └── persistence.ts contextId → 会话映射落盘
+client/
+└── client.js      浏览器半：A2A 运维面板（免构建 ModuleLoader 工厂，react 为宿主 external）
 ```
 
 设计说明：

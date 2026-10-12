@@ -190,6 +190,7 @@ export function apply(ctx: Context, config: Config): void {
     ...(bearerToken !== undefined ? { bearerToken } : {}),
     turnTimeoutMs: config.turnTimeoutMs,
     taskTtlMs: config.taskTtlMs,
+    mode: config.mode ?? 'agent',
   })
 
   // 启动失败只记录日志，不阻断插件加载（端口冲突等可修复后热重载）。

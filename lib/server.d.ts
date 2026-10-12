@@ -61,6 +61,8 @@ export interface A2aServerOptions {
     turnTimeoutMs?: number;
     /** 已完结任务保留时长（ms）；默认 1 小时。 */
     taskTtlMs?: number;
+    /** 运维面板展示的运行模式（agent/llm/echo）；仅用于 /admin/status 展示。 */
+    mode?: string;
 }
 export declare class A2aServer {
     private readonly options;
@@ -83,6 +85,8 @@ export declare class A2aServer {
     private setCommonHeaders;
     private corsHeaders;
     private serveCard;
+    /** /admin/status 与 /admin/tasks：运维面板数据源（Bearer 门禁同 RPC）。 */
+    private serveAdmin;
     private handleRpc;
     private checkAuth;
     private readBody;

@@ -68,8 +68,18 @@ export declare class TaskStore {
     private tasks;
     create(contextId: string): StoredTask;
     get(id: string): StoredTask | undefined;
-    /** 按创建时间列任务（调试用）。 */
+    /** 按创建时间倒序列任务（运维面板用）。 */
     list(): StoredTask[];
+    /** 运维面板用的任务摘要（不含 parts 大对象，倒序、限条数）。 */
+    listSummaries(limit: number): Array<{
+        id: string;
+        contextId: string;
+        state: TaskState;
+        createdAt: number;
+        lastActivityAt: number;
+        artifacts: number;
+        history: number;
+    }>;
     /**
      * 取消任务：
      * - 不存在 → 'not-found'；

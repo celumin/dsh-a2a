@@ -162,9 +162,33 @@ export class TaskStore {
     return this.tasks.get(id)
   }
 
-  /** 按创建时间列任务（调试用）。 */
+  /** 按创建时间倒序列任务（运维面板用）。 */
   list(): StoredTask[] {
-    return [...this.tasks.values()].sort((a, b) => a.createdAt - b.createdAt)
+    return [...this.tasks.values()].sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  /** 运维面板用的任务摘要（不含 parts 大对象，倒序、限条数）。 */
+  listSummaries(limit: number): Array<{
+    id: string
+    contextId: string
+    state: TaskState
+    createdAt: number
+    lastActivityAt: number
+    artifacts: number
+    history: number
+  }> {
+    return this.list().slice(0, Math.max(1, Math.min(limit, 200))).map((task) => {
+      const snapshot = task.snapshot()
+      return {
+        id: task.id,
+        contextId: task.contextId,
+        state: task.state,
+        createdAt: task.createdAt,
+        lastActivityAt: task.lastActivityAt,
+        artifacts: snapshot.artifacts?.length ?? 0,
+        history: snapshot.history?.length ?? 0,
+      }
+    })
   }
 
   /**

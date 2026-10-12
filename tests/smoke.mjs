@@ -400,6 +400,36 @@ const main = async () => {
     assert.equal(response.status, 404)
   })
 
+  // ── 运维端点（client 面板数据源）─────────────────────────────────
+
+  await test('/admin/status：状态摘要', async () => {
+    const response = await fetch(`${base.replace(/\/$/, '')}/admin/status`)
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('a2a-version'), '0.3.0')
+    const status = await response.json()
+    assert.equal(status.running, true)
+    assert.equal(status.mode, 'agent')
+    assert.equal(status.protocolVersion, '0.3.0')
+    assert.equal(status.auth, false)
+    assert.equal(status.card.name, 'Smoke Agent')
+    assert.ok(typeof status.tasks.total === 'number')
+  })
+
+  await test('/admin/tasks：任务摘要（倒序、限条数、含状态）', async () => {
+    const first = await postJson(rpc, { jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('t1', { contextId: 'ctx-admin' }) })
+    const second = await postJson(rpc, { jsonrpc: '2.0', id: 2, method: 'message/send', params: messageSendParams('t2', { contextId: 'ctx-admin' }) })
+    const response = await fetch(`${base.replace(/\/$/, '')}/admin/tasks?limit=2`)
+    const { tasks } = await response.json()
+    assert.equal(tasks.length, 2)
+    assert.equal(tasks[0].id, second.result.id, '倒序：最新在前')
+    assert.equal(tasks[1].id, first.result.id)
+    assert.equal(tasks[0].state, 'completed')
+    assert.equal(tasks[0].contextId, 'ctx-admin')
+    assert.equal(tasks[0].artifacts, 1)
+    // 假 runner 不调 recordHistory：history 只有服务端记录的 user 消息。
+    assert.equal(tasks[0].history, 1)
+  })
+
   // ── A2aClient 回环 ────────────────────────────────────────────────
 
   const client = new A2aClient({ baseUrl: base, timeoutMs: 5000 })
@@ -467,6 +497,15 @@ const main = async () => {
   await test('鉴权：卡片本身公开可读', async () => {
     const response = await fetch(`${authBase.replace(/\/$/, '')}/.well-known/agent-card.json`)
     assert.equal(response.status, 200)
+  })
+
+  await test('鉴权：/admin/* 同样受 Bearer 保护', async () => {
+    const noAuth = await fetch(`${authBase.replace(/\/$/, '')}/admin/status`)
+    assert.equal(noAuth.status, 401)
+    const withAuth = await fetch(`${authBase.replace(/\/$/, '')}/admin/status`, { headers: { Authorization: 'Bearer secret-token' } })
+    assert.equal(withAuth.status, 200)
+    const status = await withAuth.json()
+    assert.equal(status.auth, true)
   })
 
   await authServer.server.stop()
