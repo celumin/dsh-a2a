@@ -271,6 +271,16 @@ const main = async () => {
     assert.equal(got.error.code, -32001)
   })
 
+  await test('任务 id 参数：规范写法 params.id 与 params.taskId 都接受', async () => {
+    const send = await postJson(rpc, { jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('y') })
+    const byId = await postJson(rpc, { jsonrpc: '2.0', id: 2, method: 'tasks/get', params: { id: send.result.id } })
+    assert.equal(byId.result.id, send.result.id)
+    const missing = await postJson(rpc, { jsonrpc: '2.0', id: 3, method: 'tasks/get', params: {} })
+    assert.equal(missing.error.code, -32602)
+    const ghost = await postJson(rpc, { jsonrpc: '2.0', id: 4, method: 'tasks/cancel', params: { id: 'ghost' } })
+    assert.equal(ghost.error.code, -32001)
+  })
+
   await test('tasks/cancel：进行中任务可取消', async () => {
     // GATE 任务挂起中；从首个 SSE 事件（working）取 taskId 后取消。
     const events = []

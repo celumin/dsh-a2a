@@ -468,9 +468,9 @@ export class A2aServer {
   // ── tasks/get、tasks/cancel ────────────────────────────────────────
 
   private handleGetTask(request: JsonRpcRequest): JsonRpcResponse {
-    const taskId = this.stringParam(request.params, 'taskId')
+    const taskId = this.taskIdParam(request.params)
     if (taskId === undefined) {
-      return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.taskId 必须是非空字符串')
+      return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.id（或 params.taskId）必须是非空字符串')
     }
     const task = this.store.get(taskId)
     if (!task) {
@@ -480,9 +480,9 @@ export class A2aServer {
   }
 
   private handleCancel(request: JsonRpcRequest): JsonRpcResponse {
-    const taskId = this.stringParam(request.params, 'taskId')
+    const taskId = this.taskIdParam(request.params)
     if (taskId === undefined) {
-      return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.taskId 必须是非空字符串')
+      return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.id（或 params.taskId）必须是非空字符串')
     }
     const result = this.store.cancel(taskId)
     if (result === 'not-found') {
@@ -492,6 +492,14 @@ export class A2aServer {
       return jsonrpcError(request.id, A2A_ERRORS.TASK_NOT_CANCELABLE, `任务 ${taskId} 已完结，无法取消`)
     }
     return jsonrpcResult(request.id, this.store.get(taskId)?.snapshot() ?? null)
+  }
+
+  /**
+   * 任务 id 参数：A2A 规范（0.3）用 `params.id`，部分客户端与本插件旧约定
+   * 用 `params.taskId`——两者都接受，优先规范写法。
+   */
+  private taskIdParam(params: unknown): string | undefined {
+    return this.stringParam(params, 'id') ?? this.stringParam(params, 'taskId')
   }
 
   private stringParam(params: unknown, key: string): string | undefined {
@@ -533,10 +541,10 @@ export class A2aServer {
   }
 
   private async handleResubscribe(request: JsonRpcRequest, res: ServerResponse): Promise<void> {
-    const taskId = this.stringParam(request.params, 'taskId')
+    const taskId = this.taskIdParam(request.params)
     if (taskId === undefined) {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.taskId 必须是非空字符串')))
+      res.end(JSON.stringify(jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.id（或 params.taskId）必须是非空字符串')))
       return
     }
     const task = this.store.get(taskId)

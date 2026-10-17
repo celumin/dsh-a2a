@@ -240,7 +240,18 @@ async function runAgent(
     return
   }
 
-  const reply = collectAssistantText(readSessionEvents(agent), seqBefore)
+  const events = readSessionEvents(agent)
+  const reply = collectAssistantText(events, seqBefore)
+  if (reply.trim() === '') {
+    // 没有 assistant 文本时，先看本轮是否以错误结束（如模型未配置导致
+    // {{model}} 无值），把真实原因回给客户端而不是笼统的占位符。
+    const reason = collectTurnError(events, seqBefore)
+    if (reason) {
+      ctx.logger.warn(`a2a: agent 会话 ${agent.id} 本轮执行失败：${reason}`)
+      controller.updateStatus('failed', agentNote(message, `DSH agent 本轮执行失败：${reason}`))
+      return
+    }
+  }
   const finalText = reply.trim() !== '' ? reply.trim() : '（本轮 agent 未产生文本输出）'
   controller.addArtifact([{ kind: 'text', text: finalText }], { name: 'dsh-agent-reply' })
   controller.recordHistory({
@@ -276,9 +287,13 @@ async function resolveAgent(
   }
   if (state) state.auto = undefined
 
-  const agentOptions = config.provider && config.model
-    ? { provider: config.provider, model: config.model }
-    : undefined
+  const agentOptions = resolveAgentModel(ctx, config)
+  if (!agentOptions) {
+    return {
+      ok: false,
+      message: 'agent 模式需要 provider/model：配置未指定且宿主未提供默认模型（ctx.agentDefaultModel）。请在插件配置里设置 provider/model。',
+    }
+  }
   const setup = buildSetup(ctx, config)
 
   // 3) 持久化映射：重启/插件重载后恢复同一 DSH 会话，延续上下文
@@ -340,6 +355,40 @@ async function resolveAgent(
     ctx.logger.error('a2a: 创建 DSH agent 失败', error)
     return { ok: false, message: '创建 DSH agent 会话失败，请查看 dsh 日志' }
   }
+}
+
+/**
+ * 解析 agent 会话的 provider/model（与 dsh-feishu-bot 同一策略）：
+ * 1. 插件配置 `provider`/`model`（cordis.patch.yml）；
+ * 2. 缺失项回退 `ctx.agentDefaultModel.currentSelection()`（GUI 默认模型，
+ *    profile 的 agent-default-model 分节，改配置后新建会话即生效）。
+ *
+ * agent-loop 不自动兜底模型：没有 provider/model 时提示词组装里的
+ * `{{model}}` 无值，每轮都会立刻报错（turn/end reason=error），
+ * 表现为「agent 未产生文本输出」。
+ */
+function resolveAgentModel(
+  ctx: Context,
+  config: BridgeConfig,
+): { provider: string; model: string } | undefined {
+  let provider = config.provider
+  let model = config.model
+  if (!provider || !model) {
+    const defaultModel = ctx.get('agentDefaultModel') as
+      | { currentSelection(): { provider: string; model: string } }
+      | undefined
+    if (defaultModel) {
+      try {
+        const selection = defaultModel.currentSelection()
+        provider ??= selection.provider
+        model ??= selection.model
+      } catch (error) {
+        ctx.logger.warn('a2a: 读取宿主默认模型失败，agent 会话可能无法运行', error)
+      }
+    }
+  }
+  if (!provider || !model) return undefined
+  return { provider, model }
 }
 
 /** 新建/恢复会话时挂载 preset（与 GUI 新建会话同机制）。 */
@@ -413,6 +462,18 @@ function collectAssistantText(events: readonly SessionEvent[], afterSeq: number)
     if (text !== '') parts.push(text)
   }
   return parts.join('\n').trim()
+}
+
+/** 提取某 seq 之后 `turn/end` 事件里的错误原因（reason.kind === 'error'）。 */
+function collectTurnError(events: readonly SessionEvent[], afterSeq: number): string | undefined {
+  for (const event of events) {
+    if ((event.seq ?? 0) <= afterSeq) continue
+    if (event.type !== 'turn/end') continue
+    const data = event.data as { reason?: { kind?: string; error?: { message?: string; code?: string } }; error?: { message?: string } } | undefined
+    const error = data?.reason?.error ?? data?.error
+    if (typeof error?.message === 'string' && error.message !== '') return error.message
+  }
+  return undefined
 }
 
 /** 造一条 role=agent 的状态说明消息。 */

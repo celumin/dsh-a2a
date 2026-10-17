@@ -106,6 +106,11 @@ export declare class A2aServer {
     private agentNote;
     private handleGetTask;
     private handleCancel;
+    /**
+     * 任务 id 参数：A2A 规范（0.3）用 `params.id`，部分客户端与本插件旧约定
+     * 用 `params.taskId`——两者都接受，优先规范写法。
+     */
+    private taskIdParam;
     private stringParam;
     private handleStream;
     private handleResubscribe;
