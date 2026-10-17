@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
     const useCallback = react.useCallback
 
     const NS = 'dsh-a2a'
-    const PACKAGE = 'dsh-a2a'
+    const PACKAGE = '@zyfgood/dsh-a2a'
     const DEFAULT_BASE = 'http://127.0.0.1:7310/'
 
     const dict = {

@@ -26,7 +26,7 @@
  * 加载方式（profile 的 cordis.patch.yml，或 dsh plugin add 一键安装）：
  * ```yaml
  * - id: a2a
- *   name: dsh-a2a
+ *   name: '@zyfgood/dsh-a2a'
  *   config:
  *     port: 7310
  *     mode: agent

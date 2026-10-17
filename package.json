@@ -1,5 +1,5 @@
 {
-  "name": "dsh-a2a",
+  "name": "@zyfgood/dsh-a2a",
   "version": "0.2.1",
   "description": "DeepSeek Harness 插件：A2A（Agent2Agent）协议双向支持 — 把 DSH agent 暴露为标准 A2A 服务器（Agent Card + JSON-RPC message/send、message/stream SSE、tasks/get、tasks/cancel），并提供 a2a_* 工具让 agent 调用远端 A2A agent",
   "type": "module",
@@ -35,6 +35,10 @@
     "cordis.patch.yml"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -44,7 +48,7 @@
     "build:local": "tsc -p tsconfig.emit.json",
     "verify": "tsc -p tsconfig.local.json --noEmit",
     "test": "tsc -p tsconfig.test.json && node tests/smoke.mjs",
-    "prepack": "tsc -p tsconfig.json"
+    "prepack": "tsc -p tsconfig.emit.json"
   },
   "keywords": [
     "deepseek-harness",

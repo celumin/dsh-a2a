@@ -7,7 +7,7 @@
 
 # ── 方式一：agent 模式（默认，A2A 消息转交给完整 DSH agent 会话） ──────
 - id: a2a
-  name: dsh-a2a
+  name: '@zyfgood/dsh-a2a'
   config:
     port: 7310
     mode: agent
@@ -18,7 +18,7 @@
 
 # ── 方式二：llm 模式（自包含轻量回复，不建 agent 会话） ────────────────
 # - id: a2a
-#   name: dsh-a2a
+#   name: '@zyfgood/dsh-a2a'
 #   config:
 #     port: 7310
 #     mode: llm
@@ -28,14 +28,14 @@
 
 # ── 方式三：echo 模式（回显原文，先验证链路打通） ──────────────────────
 # - id: a2a
-#   name: dsh-a2a
+#   name: '@zyfgood/dsh-a2a'
 #   config:
 #     port: 7310
 #     mode: echo
 
 # ── 加固（可选）：Bearer 鉴权 + 公网地址 ───────────────────────────────
 # - id: a2a
-#   name: dsh-a2a
+#   name: '@zyfgood/dsh-a2a'
 #   config:
 #     port: 7310
 #     host: 0.0.0.0
