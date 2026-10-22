@@ -2,8 +2,8 @@
 #
 # 通过官方 CLI 安装时——
 #
-#   dsh plugin --profile <name> add @zyfgood/dsh-a2a        # npm 渠道（推荐）
-#   dsh plugin --profile <name> add github:zyfgood/dsh-a2a  # 或 GitHub
+#   dsh plugin --profile <name> add @celumin/dsh-a2a        # npm 渠道（推荐）
+#   dsh plugin --profile <name> add github:celumin/dsh-a2a  # 或 GitHub
 #
 # ——CLI 会把本包加入 profile 的 bundle 栈；profile 启动时合并此 patch
 #（单行 insert 插件行），无需手工编辑 cordis.yml。
@@ -15,7 +15,7 @@
 # 更多配置（bearerToken / llm 模式 / 公网 URL 等）见 README。
 - insert:
     - id: a2a
-      name: '@zyfgood/dsh-a2a'
+      name: '@celumin/dsh-a2a'
       config:
         port: 7310
         mode: agent

@@ -1,6 +1,9 @@
-# dsh-a2a
+# dsh-a2a（@celumin fork）
 
 DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件。
+
+> 本仓库是 [zyfgood/dsh-a2a](https://github.com/zyfgood/dsh-a2a) 的 fork，发布为 `@celumin/dsh-a2a`。
+> 相对上游包含尚未合并的 PR：出站 `metadata.from` / `metadata.kind` 与 A2A v1.0 `supportedInterfaces` 卡片兼容。
 
 DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼图，**双向**打通 A2A 生态（Google ADK、a2ajava / a2a-python SDK、各类 agent 网关）：
 
@@ -12,7 +15,7 @@ DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼�
 - **客户端方向（出站）**：注册 `a2a_*` 模型工具，让任意 DSH agent 直接呼叫远端 A2A agent
   - `a2a_discover` / `a2a_send` / `a2a_task_status` / `a2a_cancel`
   - 地址白名单（`clientAllowPatterns`）控制 agent 可呼叫的目标
-- **可视化运维面板**（Web client 半，v0.2.0）：Plugins → @zyfgood/dsh-a2a 的配置卡与设置 Plugins 分区的 A2A 标签页
+- **可视化运维面板**（Web client 半，v0.2.0）：Plugins → @celumin/dsh-a2a 的配置卡与设置 Plugins 分区的 A2A 标签页
   - 服务器状态：运行中/模式/地址/协议版本/鉴权 + curl 验证命令一键复制
   - 实时任务板：最近任务的状态徽标/上下文/产物数，非终态任务一键取消（5s 自动刷新）
   - 远端 agent 目录：保存常用远端地址，浏览器直连拉取其 Agent Card（名称/版本/技能）
@@ -24,16 +27,16 @@ DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼�
 
 ```bash
 # 官方 CLI 一键安装（npm 渠道，推荐；bundle patch 自动挂载）
-dsh plugin --profile <name> add @zyfgood/dsh-a2a
+dsh plugin --profile <name> add @celumin/dsh-a2a
 
 # 或 GitHub
-dsh plugin --profile <name> add github:zyfgood/dsh-a2a
+dsh plugin --profile <name> add github:celumin/dsh-a2a
 
 # 或本地路径
 dsh plugin --profile <name> add file:D:/DSHProjects/dsh-a2a
 ```
 
-> npm 裸名 `dsh-a2a` 是另一个无关项目（TtTRz/dsh-a2a），本插件发布在 `@zyfgood` scope 下，安装时请带 scope。
+> npm 裸名 `dsh-a2a` 是另一个无关项目（TtTRz/dsh-a2a），本 fork 发布在 `@celumin` scope 下（上游为 `@zyfgood/dsh-a2a`），安装时请带 scope。
 
 重启 profile 后生效。默认监听 `127.0.0.1:7310`。
 
@@ -83,7 +86,7 @@ profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
 
 ```yaml
 - id: a2a
-  name: '@zyfgood/dsh-a2a'
+  name: '@celumin/dsh-a2a'
   config:
     port: 7310
     mode: agent
