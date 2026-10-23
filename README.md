@@ -170,7 +170,16 @@ client/
 - 与 A2A 0.2.x 客户端的兼容：旧 card 路径照常服务；0.2 客户端不发送版本头时按同版本处理。
 - 不支持的协议面按规范返回明确错误码：push notification `-32003`、批量 JSON-RPC `-32600`。
 
-## 六、与 DSH 内置能力的关系
+## 六、mDNS 发现（建议）
+
+- **发现目标**：网关优先，P2P 降级。同时发现网关和目标 agent 时，默认经网关转发（保留鉴权、路由、审计）。
+- **P2P 降级条件**：网关不可达，或显式配置 `MDNS_P2P_ONLY=true`。P2P 不经过网关审计，日志与 UI 必须标明。
+- **TXT 字段**：只放 `proto`/`cardUrl`/`caps`/`ver`/`discoveryVer`，**不放 workspace 名、secret、任何凭据**。
+- **发现层不做鉴权**：TXT 可伪造，候选必须拉 AgentCard + 过 allowlist 才信任。
+- **抄 pi-a2a 的工程细节**：健康探测兜底、`down` 事件不删 peer、地址选择过滤虚拟网卡 + 同网段优先、同机 presence 兜底、实例名带 pid 后缀。
+- **不抄 pi-a2a 的 `wsh` 互认模型**：在 TXT 里放 workspace hash 做发现层鉴权，与 A2A 草案"发现层不可信"原则冲突。
+
+## 七、与 DSH 内置能力的关系
 
 | 需求 | 用什么 |
 |---|---|
