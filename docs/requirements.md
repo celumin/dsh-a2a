@@ -5,7 +5,7 @@
 > 上游：`https://github.com/zyfgood/dsh-a2a.git`；fork：`https://github.com/celumin/dsh-a2a.git`
 > 当前基线：`@celumin/dsh-a2a@0.3.1`（npm 已发布）；下一个交付：`0.4.0`（Round 2.5，自维护线）
 > 验证环境：dsh CLI `0.2.1-rc.2` · `@deepseek-harness-tui/dsh-tui` `0.16.1` · Node `v24.21.0` · Linux
-> 最后更新：2026-10-25（第三次修订：R1 扩为"URL 规范化 + method 协商 + v1.0 报文适配"，默认版本改 v0.3；新增 R7（卡片发现缓存，0.5.0 候选）。第二次修订 2026-10-24：复核源码后纠正 R1 根因——不是探测顺序，而是客户端 URL 规范化 + method 名写死；`agent.json` 别名整项取消；R5 明确为"把不可重试变成模型可见"。第一次修订依据 `2026-10-23-tui-profile-install-investigation.md`，R2 由"待评估"改为"已验证无需修复"）
+> 最后更新：2026-10-25（第四次修订：R1 经对抗性 review 后重写——v1.0 **响应**适配 + 端点授权算法（同源路径作用域、跨源独立白名单 `clientCardEndpointPatterns`）+ `{id}` 参数修正 + 必要管线；默认版本 v0.3；新增 R7（卡片发现缓存，0.5.0 候选）。第三次修订 2026-10-25：R1 扩为含 v1.0 报文适配。第二次修订 2026-10-24：复核源码后纠正 R1 根因——不是探测顺序，而是客户端 URL 规范化 + method 名写死；`agent.json` 别名整项取消；R5 明确为"把不可重试变成模型可见"。第一次修订依据 `2026-10-23-tui-profile-install-investigation.md`，R2 由"待评估"改为"已验证无需修复"）
 
 ## 状态图例
 
@@ -20,7 +20,7 @@
 
 ---
 
-### R1：A2A 协议版本对齐（URL 规范化 + method 协商 + v1.0 报文适配）
+### R1：A2A 协议版本对齐（URL 规范化 + method 协商 + v1.0 响应适配）
 
 - **来源**：`a2a-way` 联调记录 2026-10-22 §8.3；`docs/ROADMAP.md` Round 2.5；2026-10-24 源码复核纠正
 - **现状（2026-10-24 纠正）**：`a2a_send` 对网关不可用，**根因不是探测顺序**——`A2aClient.card()` 自 v0.1.0 起就是 `agent-card.json` 优先、`agent.json` 回退。真实缺陷四处，都在客户端：
@@ -29,18 +29,21 @@
   3. **method 名写死**：`send` / `sendStream` 固定 `message/send` / `message/stream`；A2A v1.0 的方法名是 `SendMessage` / `GetTask` / `CancelTask`，Pi 只认 v1.0 命名，故 `-32601`。
   4. **报文形状只认 v0.3**：v1.0 是 ProtoJSON——`SendMessage` 返回 `{ "task": {...} }`、状态是 `TASK_STATE_*`、part 用成员名判别（`{ text }`，无 `kind`）。客户端把结果强转 `A2aTask` 并在首跳读 `status.state`，会 TypeError 或永不到终态；网关原样透传上游响应体，故经网关**必然**命中。
 - **期望**：
-  - **探测**：保持 `agent-card.json` 优先；target 只提供 `agent.json` 时回退（现状已有，作为回归项保留）。
-  - **URL**：`cardUrl` 保留 base path（`{origin}{path}{wellKnown}`）；`rpcUrl` 不追加尾斜杠（path 为空时才落到 `/`）；RPC 端点以卡片服务地址为准（网关给 `{base}/a2a/{id}`、Pi 给 `/rpc`）；"卡片 URL / 同源根地址 / 带 `a2a/{id}` 的代理地址"三种输入都正确。卡片 URL 必须与 target **同源**，跨源拒绝且不发送 Bearer，错误文案 `card endpoint origin mismatch` 不回显卡片 URL。
-  - **method 协商**：优先 `supportedInterfaces[]` 中 `protocolBinding=JSONRPC` 条目的 `protocolVersion`，其次顶层 `protocolVersions[]`，再次顶层 `protocolVersion`；`1.x` → `SendMessage` / `GetTask` / `CancelTask`；`0.x` → `message/send` / `message/stream` / `tasks/get` / `tasks/cancel`。**卡片在、无版本声明 → 默认 v0.3**；**取不到卡片 → 降级（输入路径 + v0.3）**——两条触发条件不同，必须分开测。`GetTask` 的 params 统一 `{ id }`（不按版本分支），`CancelTask` 按版本分支；`X-A2A-Version` 跟协商结果（`1.0` / `0.3`）；v1.0 一律走同步，即使卡片声明 `streaming: true`。
-  - **报文适配**：只做四件——`SendMessage` 的 `{task}`/`{msg}` 解包、`TASK_STATE_*` → 内部小写状态（未知值不当作终态）、part 缺 `kind` 时按成员判别、`GetTask` 的 `{id}`。适配边界限定在 `A2aClient` 收发边界，内部模型不变；**不做** v1.0 流式事件（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
+  - **探测**：保持 `agent-card.json` 优先；target 只提供 `agent.json` 时回退（现状已有，作为回归项保留）。不再尝试 origin 根候选（路径基址场景会带 token 打到无关应用）。
+  - **URL**：`cardUrl` 保留 base path；`rpcUrl` 不追加尾斜杠；RPC 端点以卡片服务地址为准（网关给 `{base}/a2a/{id}`、Pi 给 `/rpc`）；target 三种形态（origin 根 / 路径基址 / 以 `/.well-known/` 结尾的卡片 URL）都正确，且 query/fragment 直接报错。
+  - **端点授权**：同源端点还要过 `clientAllowPatterns` 的**路径作用域**（防同 origin 换路径）；跨源端点默认**忽略并回退**到输入路径（不是拒绝调用），只有新增的 `clientCardEndpointPatterns`（完整 URL 前缀、默认空、`*` 不生效）显式放行才采用并带 Bearer；WARN 只记 origin 与原因码，不回显卡片 URL。
+  - **method 协商**：优先 `supportedInterfaces[]` 中 `protocolBinding=JSONRPC` 条目的 `protocolVersion`（与 url 取同一条目），其次顶层 `protocolVersions[]`，再次顶层 `protocolVersion`；`1.x` → `SendMessage` / `GetTask` / `CancelTask`；`0.x` → `message/send` / `message/stream` / `tasks/get` / `tasks/cancel`。**卡片在、无版本声明 → 默认 v0.3**；**取不到卡片 → 降级（输入路径 + v0.3）**——两条触发条件不同，必须分开测。`GetTask` 与 `CancelTask` 的 params **都发 `{ id }`**（0.3 规范即 `id`）；`X-A2A-Version` 跟协商结果（`1.0` / `0.3`）；流式仅在"卡片存在 + v0.3 + `streaming:true`"时启用。`getTask` / `cancelTask` 也要先加载并协商卡片。
+  - **响应适配**：只做四件——`SendMessage` 的 `{task}`/`{msg}` 解包、`TASK_STATE_*` → 内部状态（未知值进 `unknown` 并保留 `rawState`，不当作终态）、part 缺 `kind` 时按成员判别、`GetTask` 的 `{id}`。**出站 message 形状不变**（仍 `role:"user"` + `kind`；Pi 宽容，严格 ProtoJSON v1.0 服务端不在本轮）。**不做** v1.0 流式事件。
   - 不在网关侧做 method 名转换（网关 method-agnostic）。
 - **验收**：
-  1. 使用 fork 后的包，`a2a_send` 经网关完成全链路（`kind=request` + 轮询拿到 artifact），无需 DSH agent 手工拼 URL 或改方法名。
+  1. 使用 fork 后的包，`a2a_send` 经网关完成全链路（`kind=request` + 轮询拿到 artifact），无需 DSH agent 手工拼 URL 或改方法名；断言实际发出的 method 与 URL。
   2. 对只提供 `agent.json` 的 target，回退路径仍能发现（兼容性不回归）。
   3. 对明确声明 v0.3 的 target（dsh-a2a 自身 server 即此形态），仍走 `message/send`，裸 Task 解析正确。
   4. 对结论为 v1.0 的 target：`{task}` 可解包、`TASK_STATE_*` 归一为内部状态、part 无 `kind` 时仍能取到文本。
   5. 无卡片 target 走降级路径；卡片在但无版本声明走默认 v0.3——两条分别有用例。
-- **状态**：待实现（根因已复核纠正；2026-10-25 范围扩到报文适配）
+  6. 跨源端点默认被忽略并回退（跨源 host 收不到请求）；配了 `clientCardEndpointPatterns` 才放行并带 Bearer；同源但路径越界同样被忽略。
+  7. 超时（非终态）返回结构化错误（含最后状态与 task_id），不出现空 detail。
+- **状态**：待实现（2026-10-25 对抗性 review 后重写：响应适配 + 端点授权 + 必要管线）
 - **前置**：无
 - **备注**：
   - **网关侧的 `agent.json` 别名整项取消（2026-10-24 决）**。老客户端请求的是 origin 根路径，那里没有 agent id，别名对故障模式无效；正确路径是升级到 `0.4.0`。结论登记进 delta spec 偏离清单，形态为"评估过、不做"。
