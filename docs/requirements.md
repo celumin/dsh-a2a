@@ -3,9 +3,9 @@
 > 位置：`https://github.com/celumin/dsh-a2a.git` 的 `dsh-a2a/docs/requirements.md`
 > 本文件汇总 dsh-a2a fork 包的改进需求。每条需求标注来源、现状、期望、验收、状态与前置。
 > 上游：`https://github.com/zyfgood/dsh-a2a.git`；fork：`https://github.com/celumin/dsh-a2a.git`
-> 当前基线：`@celumin/dsh-a2a@0.3.1`（npm 已发布）
+> 当前基线：`@celumin/dsh-a2a@0.3.1`（npm 已发布）；下一个交付：`0.4.0`（Round 2.5，自维护线）
 > 验证环境：dsh CLI `0.2.1-rc.2` · `@deepseek-harness-tui/dsh-tui` `0.16.1` · Node `v24.21.0` · Linux
-> 最后更新：2026-10-24（依据 `2026-10-23-tui-profile-install-investigation.md` 的实测结论；R2 由“待评估”改为“已验证无需修复”）
+> 最后更新：2026-10-24（第二次修订：复核源码后纠正 R1 根因——不是探测顺序，而是客户端 URL 规范化 + method 名写死；`agent.json` 别名整项取消；R5 明确为"把不可重试变成模型可见"。第一次修订依据 `2026-10-23-tui-profile-install-investigation.md`，R2 由"待评估"改为"已验证无需修复"）
 
 ## 状态图例
 
@@ -20,22 +20,32 @@
 
 ---
 
-### R1：A2A 协议版本对齐（v0.3 → v1.0 探测）
+### R1：A2A 协议版本对齐（URL 规范化 + method 协商 + v1.0 报文适配）
 
-- **来源**：`a2a-way` 联调记录 2026-10-22 §8.3；`docs/ROADMAP.md` Round 2.5
-- **现状**：`a2a_send` 按 A2A v0.3 探测 `GET <target>/.well-known/agent.json`，网关只服务 `agent-card.json` → 404；RPC 用 v0.3 `message/send` → Pi 侧 `-32601`（Pi 只认 `SendMessage`/`GetTask`）。DSH agent 已自行降级用 v1.0 `SendMessage` 走通，但 `a2a_send` 工具本身对网关不可用。
+- **来源**：`a2a-way` 联调记录 2026-10-22 §8.3；`docs/ROADMAP.md` Round 2.5；2026-10-24 源码复核纠正
+- **现状（2026-10-24 纠正）**：`a2a_send` 对网关不可用，**根因不是探测顺序**——`A2aClient.card()` 自 v0.1.0 起就是 `agent-card.json` 优先、`agent.json` 回退。真实缺陷四处，都在客户端：
+  1. **卡片 URL 丢失 base path**：`normalize()` 的 `cardUrl` 是 `origin + wellKnown`。target 为 `http://gw:9090/a2a/pi-gw-agent` 时实际请求 `http://gw:9090/.well-known/agent-card.json`；网关只在 `/a2a/{id}/.well-known/agent-card.json` 挂载（且是唯一免鉴权路径），两个候选都在 origin 根 404。
+  2. **RPC URL 多一个尾斜杠**：`rpcUrl` 为 `path + '/'`，实际发出 `POST /a2a/{id}/`；网关注册的是 `POST /a2a/{agentID}`（chi，无 `RedirectSlashes` 中间件），匹配不上。
+  3. **method 名写死**：`send` / `sendStream` 固定 `message/send` / `message/stream`；A2A v1.0 的方法名是 `SendMessage` / `GetTask` / `CancelTask`，Pi 只认 v1.0 命名，故 `-32601`。
+  4. **报文形状只认 v0.3**：v1.0 是 ProtoJSON——`SendMessage` 返回 `{ "task": {...} }`、状态是 `TASK_STATE_*`、part 用成员名判别（`{ text }`，无 `kind`）。客户端把结果强转 `A2aTask` 并在首跳读 `status.state`，会 TypeError 或永不到终态；网关原样透传上游响应体，故经网关**必然**命中。
 - **期望**：
-  - 探测改用 `/.well-known/agent-card.json`；若 target 只提供 `agent.json`，回退作为兼容。
-  - 依据卡片 `supportedInterfaces[].protocolBinding` 与 `protocolVersion` 选择 RPC method 命名；若卡片未声明，默认 v1.0（`message/send`）。
-  - 保留对 v0.3 的兼容（若 target 卡片明确声明 v0.3，仍走旧路径）。
-  - 不在网关侧做 method 名转换（网关是 method-agnostic 的）。
+  - **探测**：保持 `agent-card.json` 优先；target 只提供 `agent.json` 时回退（现状已有，作为回归项保留）。
+  - **URL**：`cardUrl` 保留 base path（`{origin}{path}{wellKnown}`）；`rpcUrl` 不追加尾斜杠（path 为空时才落到 `/`）；RPC 端点以卡片服务地址为准（网关给 `{base}/a2a/{id}`、Pi 给 `/rpc`）；"卡片 URL / 同源根地址 / 带 `a2a/{id}` 的代理地址"三种输入都正确。卡片 URL 必须与 target **同源**，跨源拒绝且不发送 Bearer，错误文案 `card endpoint origin mismatch` 不回显卡片 URL。
+  - **method 协商**：优先 `supportedInterfaces[]` 中 `protocolBinding=JSONRPC` 条目的 `protocolVersion`，其次顶层 `protocolVersions[]`，再次顶层 `protocolVersion`；`1.x` → `SendMessage` / `GetTask` / `CancelTask`；`0.x` → `message/send` / `message/stream` / `tasks/get` / `tasks/cancel`。**卡片在、无版本声明 → 默认 v0.3**；**取不到卡片 → 降级（输入路径 + v0.3）**——两条触发条件不同，必须分开测。`GetTask` 的 params 统一 `{ id }`（不按版本分支），`CancelTask` 按版本分支；`X-A2A-Version` 跟协商结果（`1.0` / `0.3`）；v1.0 一律走同步，即使卡片声明 `streaming: true`。
+  - **报文适配**：只做四件——`SendMessage` 的 `{task}`/`{msg}` 解包、`TASK_STATE_*` → 内部小写状态（未知值不当作终态）、part 缺 `kind` 时按成员判别、`GetTask` 的 `{id}`。适配边界限定在 `A2aClient` 收发边界，内部模型不变；**不做** v1.0 流式事件（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
+  - 不在网关侧做 method 名转换（网关 method-agnostic）。
 - **验收**：
-  1. 使用 fork 后的包，`a2a_send` 经网关完成全链路，无需 DSH agent 自行降级。
+  1. 使用 fork 后的包，`a2a_send` 经网关完成全链路（`kind=request` + 轮询拿到 artifact），无需 DSH agent 手工拼 URL 或改方法名。
   2. 对只提供 `agent.json` 的 target，回退路径仍能发现（兼容性不回归）。
-  3. 对明确声明 v0.3 的 target，仍走旧路径。
-- **状态**：待实现
+  3. 对明确声明 v0.3 的 target（dsh-a2a 自身 server 即此形态），仍走 `message/send`，裸 Task 解析正确。
+  4. 对结论为 v1.0 的 target：`{task}` 可解包、`TASK_STATE_*` 归一为内部状态、part 无 `kind` 时仍能取到文本。
+  5. 无卡片 target 走降级路径；卡片在但无版本声明走默认 v0.3——两条分别有用例。
+- **状态**：待实现（根因已复核纠正；2026-10-25 范围扩到报文适配）
 - **前置**：无
-- **备注**：网关侧的 `agent.json` 别名是可选过渡（登记为偏离），不是 R1 的替代；R1 修好后别名可退役。
+- **备注**：
+  - **网关侧的 `agent.json` 别名整项取消（2026-10-24 决）**。老客户端请求的是 origin 根路径，那里没有 agent id，别名对故障模式无效；正确路径是升级到 `0.4.0`。结论登记进 delta spec 偏离清单，形态为"评估过、不做"。
+  - **默认值纠正**：早期版本写"卡片未声明 → 默认 v1.0（`message/send`）"是把 `message/send` 误当成 v1.0 方法名的笔误；真实对应是 v1.0 → `SendMessage`。默认值改为 **v0.3**。
+  - **已知网关约束（本轮不修）**：网关的 `supportedInterfaces[].protocolVersion` 恒为 `1.0`，与顶层 `protocolVersions` 可能矛盾；客户端按接口条目优先，故经网关一律按 v1.0 调用上游。
 
 ---
 
@@ -101,15 +111,16 @@
 ### R5：出站 A2A 调用对网关错误码的识别（`-32006` / `-32005` / `-32003`）
 
 - **来源**：`a2a-way` Round 2（出站凭据注入 + 多 principal + 严格所有权）交付；`fix_a2a_way.md` P3 原语 2 与 P2 的五段格式
-- **现状**：网关新增两类不可重试的错误码——`-32005`（`call depth exceeded`，环路）与 `-32006`（`outbound credential unavailable` / `outbound target mismatch`，注入被拒）。dsh-a2a 的出站工具目前按通用“远端 A2A 返回错误”处理，不区分“可重试的上游不可用（`-32003`）”与“不可重试的网关策略拒绝（`-32005`/`-32006`）”。
+- **现状**：网关有两类不可重试错误码——`-32005`（`call depth exceeded`，环路）与 `-32006`（`outbound credential unavailable` / `outbound target mismatch`，注入被拒）。客户端本身**没有自动重试**（`sendForText` 流式失败直接抛出，不回落同步），`A2aRpcError` 也已原样保留 `code` 与网关 message。缺的是**模型可见的分类**：工具输出只有 `{ok:false, detail:"远端 A2A 返回错误 -32006: ..."}`，模型无法区分"可重试的上游不可用"与"不可重试的策略拒绝"。
 - **期望**：
-  - `a2a_send` 等出站工具识别 `-32005`/`-32006`，不自动重试，错误信息里保留网关的固定 message（`call depth exceeded` / `outbound credential unavailable` / `outbound target mismatch`）。
-  - `-32003`（上游不可用）仍按可重试处理。
+  - `a2a_send` / `a2a_task_status` 输出增加 `error_code`（number）与 `retryable`（boolean）：`-32005`/`-32006` → `false`；`-32003` → `true`；其他未知码 → 两个字段都缺省。
+  - 错误信息原样保留网关的固定 message（`call depth exceeded` / `outbound credential unavailable` / `outbound target mismatch`），不改写、不吞掉。
+  - `-32003`（上游不可用）仍按现有可重试策略处理，不得因本轮改动变成"所有网关错误都不重试"。
   - `metadata._a2a_depth` 在出站时递增（若 dsh-a2a 支持携带 metadata），配合网关的环路保护。
 - **验收**：
-  1. 目标网关返回 `-32005` 时，dsh-a2a 不重试，错误信息含 `call depth exceeded`。
-  2. 返回 `-32006` 时，不重试，错误信息含网关的固定 message（两种子类之一）。
-  3. 返回 `-32003` 时，按现有可重试策略处理。
+  1. 目标网关返回 `-32005` 时，dsh-a2a 不重试，错误信息含 `call depth exceeded`，且输出 `retryable=false`。
+  2. 返回 `-32006` 时，不重试，错误信息含网关的固定 message（两种子类之一），且 `retryable=false`。
+  3. 返回 `-32003` 时，`retryable=true`，按现有可重试策略处理。
 - **状态**：待实现（并入 Round 2.5 范围）
 - **前置**：无（`a2a-way` Round 2 已于 2026-10-24 交付，`-32005`/`-32006` 错误码目录稳定）
 - **备注**：这条不要求 dsh-a2a 理解 `-32006` 的业务含义（caller/authority 匹配），只要求“不重试 + 保留 message”；排障由网关的 linktest 和 admin 面板负责。并入 Round 2.5 后，fork 包第一个版本即包含此修复。
