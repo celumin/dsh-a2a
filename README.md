@@ -168,7 +168,7 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
     tools: true
     clientAllowPatterns:
       - http://127.0.0.1:9090
-      - http://192.168.10.0/24   # 仅示例：白名单按 host/port/路径前缀匹配
+      - http://192.168.10.224:38845   # 按 host/port/路径前缀匹配，不支持 CIDR
 ```
 
 - 密钥用 `env:A2A_TOKEN` 形式，不要把明文 token 写进 patch。
