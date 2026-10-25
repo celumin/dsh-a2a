@@ -298,7 +298,7 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 ```bash
 pnpm verify       # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
-pnpm test         # 核心构建 + smoke（56）+ compat 纯函数单测（37）
+pnpm test         # 核心构建 + smoke（57）+ compat 纯函数单测（38）
 pnpm build:local  # 本地全量构建 lib/（shims 类型校验）
 pnpm build        # 宿主环境全量构建（需要真实 @deepseek-ai/* 类型）
 npm run prepack   # 发布前构建（tsconfig.emit.json + shims）
