@@ -212,6 +212,22 @@ async function startCapture(handler) {
   }
 }
 
+/** 记录所有请求的极简 HTTP 服务端（用于发现/授权用例）。 */
+async function startRaw(handler) {
+  const requests = []
+  const server = createServer((req, res) => {
+    const record = { method: req.method, url: req.url, authorization: req.headers.authorization }
+    requests.push(record)
+    handler(req, res, record)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  }
+}
+
 function completedTask() {
   return {
     kind: 'task',
@@ -582,6 +598,161 @@ const main = async () => {
   await test('A2aClient.getTask / cancelTask 错误映射', async () => {
     await assert.rejects(() => client.getTask('ghost'), (error) => error.code === -32001)
     await assert.rejects(() => client.cancelTask('ghost'), (error) => error.code === -32001)
+  })
+
+  // ── 卡片发现与端点授权（Round 2.5）────────────────────────────────
+
+  await test('A2aClient.card：路径基址命中卡片（网关形态）', async () => {
+    const srv = await startRaw((req, res) => {
+      if (req.url === '/a2a/x/.well-known/agent-card.json') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ name: 'path-card', version: '1.0.0', url: '/a2a/x', capabilities: { streaming: false }, skills: [] }))
+        return
+      }
+      res.writeHead(404)
+      res.end('')
+    })
+    try {
+      const pathClient = new A2aClient({ baseUrl: `${srv.origin}/a2a/x`, timeoutMs: 5000 })
+      const card = await pathClient.card()
+      assert.equal(card.name, 'path-card')
+      const decision = await pathClient.endpoint()
+      assert.equal(decision.source, 'card')
+      assert.equal(decision.url, `${srv.origin}/a2a/x`)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  await test('A2aClient.card：不跟随重定向', async () => {
+    const srv = await startRaw((req, res) => {
+      if (req.url === '/a/.well-known/agent-card.json') {
+        res.writeHead(302, { Location: '/followed' })
+        res.end()
+        return
+      }
+      if (req.url === '/followed') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ name: 'followed' }))
+        return
+      }
+      res.writeHead(404)
+      res.end('')
+    })
+    try {
+      const redirectClient = new A2aClient({ baseUrl: `${srv.origin}/a`, timeoutMs: 5000 })
+      await assert.rejects(() => redirectClient.card(), /url|supportedInterfaces/i)
+      assert.equal(srv.requests.some((record) => record.url === '/followed'), false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  await test('A2aClient：卡片全 404 → 降级输入路径 + WARN 只含 origin', async () => {
+    const srv = await startRaw((_req, res) => {
+      res.writeHead(404)
+      res.end('')
+    })
+    const logs = []
+    try {
+      const degraded = new A2aClient({
+        baseUrl: `${srv.origin}/a2a/x`,
+        timeoutMs: 5000,
+        logger: (level, message, fields) => logs.push({ level, message, fields }),
+      })
+      const decision = await degraded.endpoint()
+      assert.equal(decision.source, 'input')
+      assert.equal(decision.url, `${srv.origin}/a2a/x`)
+      await assert.rejects(() => degraded.card(), /url|supportedInterfaces/i)
+      const warning = logs.find((entry) => entry.level === 'warn')
+      assert.ok(warning)
+      assert.equal(warning.fields.target_origin, srv.origin)
+      assert.equal(JSON.stringify(warning.fields).includes('/a2a/x'), false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  await test('A2aClient：跨源卡片端点默认忽略，跨源主机收不到请求', async () => {
+    const other = await startRaw((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    })
+    const srv = await startRaw((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        name: 'cross',
+        version: '1.0.0',
+        supportedInterfaces: [{ url: `${other.origin}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+        capabilities: { streaming: false },
+        skills: [],
+      }))
+    })
+    try {
+      const crossClient = new A2aClient({ baseUrl: srv.origin, timeoutMs: 5000 })
+      const decision = await crossClient.endpoint()
+      assert.equal(decision.source, 'input')
+      assert.equal(decision.warn, 'cross-origin-ignored')
+      assert.equal(other.requests.length, 0)
+    } finally {
+      await srv.close()
+      await other.close()
+    }
+  })
+
+  await test('A2aClient：跨源端点命中白名单才采用', async () => {
+    const other = await startRaw((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    })
+    const srv = await startRaw((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        name: 'cross-ok',
+        version: '1.0.0',
+        supportedInterfaces: [{ url: `${other.origin}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+        capabilities: { streaming: false },
+        skills: [],
+      }))
+    })
+    try {
+      const allowed = new A2aClient({
+        baseUrl: srv.origin,
+        timeoutMs: 5000,
+        cardEndpointPatterns: [`${other.origin}/rpc`],
+      })
+      const decision = await allowed.endpoint()
+      assert.equal(decision.source, 'card')
+      assert.equal(decision.warn, 'cross-origin-allowed')
+      assert.equal(decision.url, `${other.origin}/rpc`)
+    } finally {
+      await srv.close()
+      await other.close()
+    }
+  })
+
+  await test('A2aClient.card：候选不在白名单作用域时不带 Bearer', async () => {
+    const srv = await startRaw((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ name: 'auth', version: '1.0.0', url: '/', capabilities: { streaming: false }, skills: [] }))
+    })
+    try {
+      const outside = new A2aClient({
+        baseUrl: srv.origin,
+        bearerToken: 'secret',
+        allowPatterns: ['http://example.invalid/'],
+        timeoutMs: 5000,
+      })
+      await outside.card()
+      assert.equal(srv.requests[0].authorization, undefined)
+
+      srv.requests.length = 0
+      const inside = new A2aClient({ baseUrl: srv.origin, bearerToken: 'secret', allowPatterns: ['*'], timeoutMs: 5000 })
+      await inside.card()
+      assert.equal(srv.requests[0].authorization, 'Bearer secret')
+    } finally {
+      await srv.close()
+    }
   })
 
   await openServer.server.stop()

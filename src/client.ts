@@ -21,6 +21,15 @@ import type {
   JsonRpcResponse,
   TaskEvent,
 } from './protocol.ts'
+import {
+  decideEndpoint,
+  cardCandidates,
+  normalizeTarget,
+  resolveCardEndpoint,
+  matchesAllowlist,
+  type EndpointDecision,
+  type NormalizedTarget,
+} from './endpoint.ts'
 
 export { matchesAllowlist } from './endpoint.ts'
 
@@ -36,6 +45,14 @@ export interface A2aClientOptions {
    * 未配置（或为空串）时不携带 `from`，回退为旧行为。
    */
   peerName?: string
+  /** 目标白名单（同一份也用于卡片端点的路径作用域）。默认 `['*']`。 */
+  allowPatterns?: readonly string[]
+  /** 跨源卡片端点的白名单：完整 URL 前缀，默认 `[]`（全拒），`*` 不生效。 */
+  cardEndpointPatterns?: readonly string[]
+  /** 诊断日志（WARN 只含 origin 与原因码，不含 path/query）。 */
+  logger?: (level: 'warn' | 'info', message: string, fields?: Record<string, string>) => void
+  /** 注入 fetch（测试用）；默认全局 fetch。 */
+  fetchImpl?: typeof fetch
 }
 
 /**
@@ -65,7 +82,8 @@ interface NormalizedBase {
 
 export class A2aClient {
   private base: NormalizedBase | undefined
-  private cachedCard: AgentCard | undefined
+  private target: NormalizedTarget | undefined
+  private cardState: { card?: AgentCard; decision: EndpointDecision } | undefined
 
   constructor(private readonly options: A2aClientOptions) {}
 
@@ -136,40 +154,107 @@ export class A2aClient {
     return payload.result as T
   }
 
-  /** 拉取远端 Agent Card（带进程内缓存）。 */
-  async card(forceRefresh = false): Promise<AgentCard> {
-    if (!forceRefresh && this.cachedCard !== undefined) return this.cachedCard
-    const base = this.normalize()
-    const headers = this.headers()
-    const attempts = [
-      { url: base.cardUrl('/.well-known/agent-card.json'), legacy: false },
-      { url: base.cardUrl('/.well-known/agent.json'), legacy: true },
-    ]
-    let lastError: unknown
-    for (const attempt of attempts) {
+  private targetInfo(): NormalizedTarget {
+    this.target ??= normalizeTarget(this.options.baseUrl)
+    return this.target
+  }
+
+  private fetchFn(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
+  }
+
+  private warn(message: string, fields?: Record<string, string>): void {
+    this.options.logger?.('warn', message, fields)
+  }
+
+  /** 卡片 GET 的头：不带版本头；`Authorization` 仅在候选落在白名单作用域内时携带。 */
+  private cardHeaders(url: string): Record<string, string> {
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (this.options.bearerToken !== undefined && matchesAllowlist(this.options.allowPatterns ?? ['*'], url)) {
+      headers.Authorization = `Bearer ${this.options.bearerToken}`
+    }
+    return headers
+  }
+
+  /**
+   * 卡片发现 + 端点决策（实例内缓存，不抛错）。
+   * - 候选按 `cardCandidates` 顺序尝试，不跟随重定向；
+   * - 每个候选的超时 `min(5s, 剩余预算)`；
+   * - 全部失败 → 返回 `source: 'input'` 的决策，并记一条不含 path 的 WARN。
+   */
+  async ensureCard(forceRefresh = false): Promise<{ card?: AgentCard; decision: EndpointDecision }> {
+    if (!forceRefresh && this.cardState !== undefined) return this.cardState
+    const target = this.targetInfo()
+    const deadline = Date.now() + (this.options.timeoutMs ?? 120_000)
+    const failures: string[] = []
+    for (const candidate of cardCandidates(target)) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
+        failures.push(`${candidate} → budget exhausted`)
+        break
+      }
       try {
-        const response = await fetch(attempt.url, {
-          headers,
-          signal: AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
+        const response = await this.fetchFn()(candidate, {
+          headers: this.cardHeaders(candidate),
+          redirect: 'manual',
+          signal: AbortSignal.timeout(Math.min(5_000, remaining)),
         })
+        if (response.status >= 300 && response.status < 400) {
+          failures.push(`${candidate} → redirect ${response.status}`)
+          continue
+        }
         if (!response.ok) {
-          lastError = new A2aRpcError(-1, `GET ${attempt.url} → HTTP ${response.status}`)
+          failures.push(`${candidate} → HTTP ${response.status}`)
           continue
         }
         const card = (await response.json()) as AgentCard
-        const url = resolveCardUrl(card)
-        if (url !== undefined) {
-          // v1.0 卡片可能只有 supportedInterfaces；补齐顶层 url 供本客户端统一使用。
-          const normalized = url === card.url ? card : { ...card, url }
-          this.cachedCard = normalized
-          return normalized
+        const serviceUrl = resolveCardUrl(card)
+        if (serviceUrl === undefined) {
+          failures.push(`${candidate} → 卡片缺少 url`)
+          continue
         }
-        lastError = new A2aRpcError(-1, `GET ${attempt.url} 返回的卡片缺少 url（顶层 url 与 supportedInterfaces[].url 均未提供）`)
+        const normalized = serviceUrl === card.url ? card : { ...card, url: serviceUrl }
+        const cardEndpoint = resolveCardEndpoint(normalized, candidate)
+        const decision = decideEndpoint({
+          target,
+          ...(cardEndpoint !== undefined ? { cardEndpoint } : {}),
+          allowPatterns: this.options.allowPatterns ?? ['*'],
+          cardEndpointPatterns: this.options.cardEndpointPatterns ?? [],
+        })
+        if (decision.warn !== undefined) {
+          const fields: Record<string, string> = { target_origin: target.origin, reason: decision.warn }
+          if (cardEndpoint !== undefined) fields['card_origin'] = originOf(cardEndpoint)
+          this.warn(`card endpoint ${decision.warn}`, fields)
+        }
+        this.cardState = { card: normalized, decision }
+        return this.cardState
       } catch (error) {
-        lastError = error
+        failures.push(`${candidate} → ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    const decision = decideEndpoint({
+      target,
+      allowPatterns: this.options.allowPatterns ?? ['*'],
+      cardEndpointPatterns: this.options.cardEndpointPatterns ?? [],
+    })
+    this.warn('card discovery failed', { target_origin: target.origin, reason: 'not-found' })
+    this.cardState = { decision }
+    return this.cardState
+  }
+
+  /** 端点决策（发现失败时返回输入路径，不抛错）。 */
+  async endpoint(): Promise<EndpointDecision> {
+    return (await this.ensureCard()).decision
+  }
+
+  /** 拉取远端 Agent Card（带实例缓存）；全部候选失败时抛错。 */
+  async card(forceRefresh = false): Promise<AgentCard> {
+    const state = await this.ensureCard(forceRefresh)
+    if (state.card !== undefined) return state.card
+    throw new A2aRpcError(
+      -1,
+      `Agent Card 发现失败：候选均不可用或卡片缺少 url（顶层 url 与 supportedInterfaces[].url 均未提供）`,
+    )
   }
 
   /**
@@ -425,4 +510,13 @@ function artifactTextFromEvents(events: TaskEvent[]): string {
     }
   }
   return out.join('\n').trim()
+}
+
+/** 只取站点源，供 WARN 使用（不记录 path/query）。 */
+function originOf(raw: string): string {
+  try {
+    return new URL(raw).origin
+  } catch {
+    return 'unknown'
+  }
 }
