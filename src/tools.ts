@@ -10,11 +10,19 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { A2aClient, matchesAllowlist } from './client.ts'
+import { A2aClient, A2aRpcError, matchesAllowlist } from './client.ts'
 import type { A2aOutboundKind } from './client.ts'
 import type { A2aTask } from './protocol.ts'
+import { classifyError, versionOf } from './compat.ts'
 
 // ── 输出类型（字面量 ok 判别，供 render 窄化）─────────────────────────
+
+/** 失败时统一携带的错误分类（`-32005`/`-32006` 不可重试，`-32003` 可重试）。 */
+interface ToolFailure {
+  detail: string
+  error_code?: number
+  retryable?: boolean
+}
 
 interface DiscoverOk {
   ok: true
@@ -23,20 +31,39 @@ interface DiscoverOk {
   url: string
   version: string
   protocol_version: string
+  /** 协商出的线上协议（v1.0 / v0.3）。 */
+  negotiated_version: string
+  /** 实际会 POST 的 JSON-RPC 端点（可能因授权回退到输入路径）。 */
+  rpc_endpoint: string
   streaming: boolean
   skills: string[]
   auth_required: boolean
 }
-interface DiscoverFail { ok: false; detail: string }
+interface DiscoverFail extends ToolFailure { ok: false }
 
 interface SendOk { ok: boolean; state: string; task_id: string; context_id: string; reply: string; detail?: string }
-interface SendFail { ok: false; detail: string }
+interface SendFail extends ToolFailure { ok: false }
 
 interface StatusOk { ok: true; state: string; summary: string }
-interface StatusFail { ok: false; detail: string }
+interface StatusFail extends ToolFailure { ok: false }
 
 interface CancelOk { ok: boolean; state: string; detail?: string }
-interface CancelFail { ok: false; detail: string }
+interface CancelFail extends ToolFailure { ok: false }
+
+/** 把异常转成工具输出：保留 detail，并对网关错误码给出可重试性。 */
+function failure(error: unknown): ToolFailure {
+  const detail = error instanceof Error ? error.message : String(error)
+  if (error instanceof A2aRpcError) {
+    return { detail, error_code: error.code, ...classifyError(error.code) }
+  }
+  return { detail }
+}
+
+const FAILURE_PROPS = {
+  detail: { type: 'string' },
+  error_code: { type: 'number', description: '远端 JSON-RPC 错误码；传输层错误为 -1' },
+  retryable: { type: 'boolean', description: '是否鼓励重试：-32005/-32006 为 false，-32003 为 true' },
+} as const
 
 /** 把任务快照渲染成给模型看的一段简报文本。 */
 function renderTask(task: A2aTask): string {
@@ -65,6 +92,8 @@ export function registerA2aTools(
   ctx: Context,
   options: {
     allowPatterns: readonly string[]
+    /** 跨源卡片端点的白名单（完整 URL 前缀，默认空）。 */
+    cardEndpointPatterns: readonly string[]
     timeoutMs: number
     /** 本端 peer 名：写入出站消息 metadata.from，供对端路由回话。 */
     peerName?: string
@@ -91,6 +120,13 @@ export function registerA2aTools(
     new A2aClient({
       baseUrl: target,
       timeoutMs: options.timeoutMs,
+      allowPatterns: options.allowPatterns,
+      cardEndpointPatterns: options.cardEndpointPatterns,
+      logger: (level, message, fields) => {
+        const line = fields === undefined ? `a2a: ${message}` : `a2a: ${message} ${JSON.stringify(fields)}`
+        if (level === 'warn') ctx.logger.warn(line)
+        else ctx.logger.info(line)
+      },
       ...(token ? { bearerToken: token } : {}),
       ...(options.peerName !== undefined && options.peerName !== '' ? { peerName: options.peerName } : {}),
     })
@@ -117,6 +153,8 @@ export function registerA2aTools(
           url: { type: 'string' },
           version: { type: 'string' },
           protocol_version: { type: 'string' },
+          negotiated_version: { type: 'string' },
+          rpc_endpoint: { type: 'string' },
           streaming: { type: 'boolean' },
           skills: { type: 'array', items: { type: 'string' } },
           auth_required: { type: 'boolean' },
@@ -137,20 +175,26 @@ export function registerA2aTools(
       const blocked = checkTarget(args.target)
       if (blocked !== undefined) return { ok: false, detail: blocked }
       try {
-        const card = await clientFor(args.target).card(true)
+        const client = clientFor(args.target)
+        const card = await client.card(true)
+        const version = versionOf(card) ?? 'v0.3'
+        const endpoint = await client.endpoint()
         const result: DiscoverOk = {
           ok: true,
           name: card.name,
-          url: card.url ?? '',
+          url: card.url ?? endpoint.url,
           version: card.version,
-          protocol_version: card.protocolVersion ?? card.protocolVersions?.[0] ?? 'unknown',
+          protocol_version: card.protocolVersion ?? card.protocolVersions?.[0] ?? version,
+          negotiated_version: version,
+          rpc_endpoint: endpoint.url,
           streaming: card.capabilities?.streaming ?? false,
           skills: card.skills.map((s) => `${s.id}（${s.name}${s.description !== undefined ? '：' + s.description : ''}）`),
-          auth_required: (card.security ?? []).some((entry) => Object.keys(entry).length > 0),
+          auth_required: (card.security ?? []).some((entry) => Object.keys(entry).length > 0)
+            || Object.keys(card.securitySchemes ?? {}).length > 0,
         }
         return result
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+        return { ok: false, ...failure(error) }
       }
     },
   }))
@@ -184,7 +228,7 @@ export function registerA2aTools(
           task_id: { type: 'string' },
           context_id: { type: 'string' },
           reply: { type: 'string' },
-          detail: { type: 'string' },
+          ...FAILURE_PROPS,
         },
       },
       render: (_args, raw): Array<{ type: string; text: string }> => {
@@ -221,7 +265,7 @@ export function registerA2aTools(
           reply: text,
         }
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+        return { ok: false, ...failure(error) }
       }
     },
   }))
@@ -243,7 +287,7 @@ export function registerA2aTools(
           ok: { type: 'boolean', required: true },
           state: { type: 'string' },
           summary: { type: 'string' },
-          detail: { type: 'string' },
+          ...FAILURE_PROPS,
         },
       },
       render: (_args, raw): Array<{ type: string; text: string }> => {
@@ -265,7 +309,7 @@ export function registerA2aTools(
         const task = await clientFor(args.target, args.bearer_token).getTask(args.task_id)
         return { ok: true, state: task.status.state, summary: renderTask(task) }
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+        return { ok: false, ...failure(error) }
       }
     },
   }))
@@ -286,7 +330,7 @@ export function registerA2aTools(
         properties: {
           ok: { type: 'boolean', required: true },
           state: { type: 'string' },
-          detail: { type: 'string' },
+          ...FAILURE_PROPS,
         },
       },
       render: (_args, raw): Array<{ type: string; text: string }> => {
@@ -308,7 +352,7 @@ export function registerA2aTools(
         const task = await clientFor(args.target, args.bearer_token).cancelTask(args.task_id)
         return { ok: task.status.state === 'canceled', state: task.status.state }
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+        return { ok: false, ...failure(error) }
       }
     },
   }))

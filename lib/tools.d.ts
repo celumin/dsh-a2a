@@ -10,6 +10,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 export declare function registerA2aTools(ctx: Context, options: {
     allowPatterns: readonly string[];
+    /** 跨源卡片端点的白名单（完整 URL 前缀，默认空）。 */
+    cardEndpointPatterns: readonly string[];
     timeoutMs: number;
     /** 本端 peer 名：写入出站消息 metadata.from，供对端路由回话。 */
     peerName?: string;

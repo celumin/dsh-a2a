@@ -94,6 +94,8 @@ export interface Config {
     tools?: boolean;
     /** 出站工具可呼叫的远端地址白名单（默认 ['*'] 全放开）。 */
     clientAllowPatterns?: string[];
+    /** 跨源卡片端点的白名单：完整 URL 前缀，默认 []（全拒），`*` 不生效。 */
+    clientCardEndpointPatterns?: string[];
     /** 出站调用超时（ms，默认 2 分钟）。 */
     clientTimeoutMs?: number;
 }
