@@ -141,9 +141,9 @@ export function registerA2aTools(
         const result: DiscoverOk = {
           ok: true,
           name: card.name,
-          url: card.url,
+          url: card.url ?? '',
           version: card.version,
-          protocol_version: card.protocolVersion,
+          protocol_version: card.protocolVersion ?? card.protocolVersions?.[0] ?? 'unknown',
           streaming: card.capabilities?.streaming ?? false,
           skills: card.skills.map((s) => `${s.id}（${s.name}${s.description !== undefined ? '：' + s.description : ''}）`),
           auth_required: (card.security ?? []).some((entry) => Object.keys(entry).length > 0),

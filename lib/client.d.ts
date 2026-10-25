@@ -14,6 +14,8 @@
  * @module dsh-a2a/client
  */
 import type { A2aTask, AgentCard, TaskEvent } from './protocol.ts';
+import { type EndpointDecision } from './endpoint.ts';
+export { matchesAllowlist } from './endpoint.ts';
 export interface A2aClientOptions {
     /** 远端 agent 基地址（Agent Card 所在站点的根，或直接给 JSON-RPC 地址）。 */
     baseUrl: string;
@@ -26,6 +28,14 @@ export interface A2aClientOptions {
      * 未配置（或为空串）时不携带 `from`，回退为旧行为。
      */
     peerName?: string;
+    /** 目标白名单（同一份也用于卡片端点的路径作用域）。默认 `['*']`。 */
+    allowPatterns?: readonly string[];
+    /** 跨源卡片端点的白名单：完整 URL 前缀，默认 `[]`（全拒），`*` 不生效。 */
+    cardEndpointPatterns?: readonly string[];
+    /** 诊断日志（WARN 只含 origin 与原因码，不含 path/query）。 */
+    logger?: (level: 'warn' | 'info', message: string, fields?: Record<string, string>) => void;
+    /** 注入 fetch（测试用）；默认全局 fetch。 */
+    fetchImpl?: typeof fetch;
 }
 /**
  * 出站消息的 `metadata.kind`：
@@ -40,21 +50,46 @@ export declare class A2aRpcError extends Error {
     readonly data?: unknown | undefined;
     constructor(code: number, message: string, data?: unknown | undefined);
 }
+/** 轮询到总预算仍未结束：携带最后状态，便于模型判断是 agent 卡住还是客户端不认识状态。 */
+export declare class A2aTimeoutError extends A2aRpcError {
+    constructor(message: string);
+}
 export declare class A2aClient {
     private readonly options;
-    private base;
-    private cachedCard;
+    private target;
+    private cardState;
     constructor(options: A2aClientOptions);
-    /** 规范化基地址：容忍带 card 路径 / JSON-RPC 路径的输入。 */
-    private normalize;
     /**
      * 构造出站消息的 metadata：始终带 `kind`（默认 message），
      * 配置了本端 peerName 时附带 `from`（对端据此路由回话）。
      */
     private messageMetadata;
-    private headers;
+    private rpcHeaders;
+    /** 一次调用的总预算：发现 / RPC / 轮询共用同一个 deadline。 */
+    private deadline;
+    /**
+     * 发一次 JSON-RPC：端点与方法由卡片协商结果决定；`deadline` 由调用方传入，
+     * 让发现 / 调用 / 轮询共享同一份预算。
+     */
     private rpc;
-    /** 拉取远端 Agent Card（带进程内缓存）。 */
+    private targetInfo;
+    private fetchFn;
+    private warn;
+    /** 卡片 GET 的头：不带版本头；`Authorization` 仅在候选落在白名单作用域内时携带。 */
+    private cardHeaders;
+    /**
+     * 卡片发现 + 端点决策（实例内缓存，不抛错）。
+     * - 候选按 `cardCandidates` 顺序尝试，不跟随重定向；
+     * - 每个候选的超时 `min(5s, 剩余预算)`；
+     * - 全部失败 → 返回 `source: 'input'` 的决策，并记一条不含 path 的 WARN。
+     */
+    ensureCard(forceRefresh?: boolean): Promise<{
+        card?: AgentCard;
+        decision: EndpointDecision;
+    }>;
+    /** 端点决策（发现失败时返回输入路径，不抛错）。 */
+    endpoint(): Promise<EndpointDecision>;
+    /** 拉取远端 Agent Card（带实例缓存）；全部候选失败时抛错。 */
     card(forceRefresh?: boolean): Promise<AgentCard>;
     /**
      * message/send：同步拿终态。
@@ -78,7 +113,7 @@ export declare class A2aClient {
         /** 出站 metadata.kind（默认 message）。 */
         kind?: A2aOutboundKind;
     }): Promise<TaskEvent[]>;
-    getTask(taskId: string): Promise<A2aTask>;
+    getTask(taskId: string, deadline?: number): Promise<A2aTask>;
     cancelTask(taskId: string): Promise<A2aTask>;
     /** 便捷：send() + 提取 artifact 文本（工具层使用）。 */
     sendForText(text: string, options?: {
@@ -93,12 +128,4 @@ export declare class A2aClient {
         text: string;
     }>;
 }
-/**
- * 出站白名单模式匹配：
- * - `'*'` 全放开；
- * - URL 形式（`https://a2a.example.com/`、`http://10.0.0.5:7310/`）按
- *   host + port + 路径前缀匹配；hostname 支持 `*.example.com` 通配子域；
- * - `'*:7310'` 任意主机的指定端口。
- */
-export declare function matchesAllowlist(patterns: readonly string[], target: string): boolean;
 //# sourceMappingURL=client.d.ts.map

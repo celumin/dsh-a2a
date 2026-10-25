@@ -24,7 +24,7 @@ import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
 import { A2aServer, silentLogger } from '../lib/server.js'
 import { buildAgentCard } from '../lib/protocol.js'
-import { A2aClient, matchesAllowlist } from '../lib/client.js'
+import { A2aClient, A2aTimeoutError, matchesAllowlist } from '../lib/client.js'
 
 // ── 测试基础设施 ────────────────────────────────────────────────────────
 
@@ -226,6 +226,26 @@ async function startRaw(handler) {
     requests,
     close: () => new Promise((resolve) => server.close(resolve)),
   }
+}
+
+/** 带卡片 + JSON-RPC 的假 agent：记录每次出站调用的 method/params/版本头。 */
+async function startAgent(card, onRpc) {
+  const calls = []
+  const srv = await startRaw((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(typeof card === 'function' ? card() : card))
+      return
+    }
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      const parsed = JSON.parse(body)
+      calls.push({ method: parsed.method, params: parsed.params, version: req.headers['x-a2a-version'], url: req.url })
+      onRpc(parsed, res)
+    })
+  })
+  return { ...srv, calls }
 }
 
 function completedTask() {
@@ -752,6 +772,210 @@ const main = async () => {
       assert.equal(srv.requests[0].authorization, 'Bearer secret')
     } finally {
       await srv.close()
+    }
+  })
+
+  // ── 版本协商与响应适配（Round 2.5）──────────────────────────────
+
+  const v10Card = {
+    name: 'v10',
+    version: '1.0.0',
+    supportedInterfaces: [{ url: '/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    capabilities: { streaming: false },
+    skills: [],
+  }
+  const v03Card = {
+    name: 'v03',
+    version: '1.0.0',
+    protocolVersion: '0.3.0',
+    url: '/',
+    capabilities: { streaming: false },
+    skills: [],
+  }
+  const rpcResult = (req, result) => ({ jsonrpc: '2.0', id: req.id, result })
+  const completedV10 = { task: { id: 't1', contextId: 'c1', status: { state: 'TASK_STATE_COMPLETED' }, artifacts: [{ parts: [{ text: 'ok' }] }] } }
+  const completedV03 = { kind: 'task', id: 't1', contextId: 'c1', status: { state: 'completed', timestamp: new Date().toISOString() } }
+
+  await test('A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV10)))
+    })
+    try {
+      const v10Client = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      const out = await v10Client.sendForText('hi', { kind: 'request' })
+      assert.equal(out.text, 'ok')
+      assert.equal(out.task.status.state, 'completed')
+      assert.equal(agent.calls[0].method, 'SendMessage')
+      assert.equal(agent.calls[0].version, '1.0')
+      assert.equal(agent.calls[0].url, '/rpc')
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：v0.3 用 message/send、版本头 0.3', async () => {
+    const agent = await startAgent(v03Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV03)))
+    })
+    try {
+      const v03Client = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await v03Client.sendForText('hi')
+      assert.equal(agent.calls[0].method, 'message/send')
+      assert.equal(agent.calls[0].version, '0.3')
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：v1.0 即使声明 streaming 也不发流式方法', async () => {
+    const agent = await startAgent({ ...v10Card, capabilities: { streaming: true } }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV10)))
+    })
+    try {
+      const streamClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await streamClient.sendForText('hi', { preferStream: true })
+      assert.deepEqual(agent.calls.map((call) => call.method), ['SendMessage'])
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：无卡片降级 message/send 且保留 metadata.kind', async () => {
+    const captured = []
+    const srv = await startRaw((req, res) => {
+      if (req.method === 'GET') {
+        res.writeHead(404)
+        res.end('')
+        return
+      }
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        const parsed = JSON.parse(body)
+        captured.push(parsed)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(rpcResult(parsed, completedV03)))
+      })
+    })
+    try {
+      const degraded = new A2aClient({ baseUrl: `${srv.origin}/a2a/x`, timeoutMs: 5000 })
+      await degraded.sendForText('hi')
+      assert.equal(captured[0].method, 'message/send')
+      assert.equal(captured[0].params.message.metadata.kind, 'message')
+    } finally {
+      await srv.close()
+    }
+  })
+
+  await test('A2aClient.getTask/cancelTask：按版本发方法名与 {id}', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, { id: 't9', contextId: 'c', status: { state: 'TASK_STATE_WORKING' } })))
+    })
+    try {
+      const taskClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await taskClient.getTask('t9')
+      await taskClient.cancelTask('t9')
+      assert.equal(agent.calls[0].method, 'GetTask')
+      assert.deepEqual(agent.calls[0].params, { id: 't9' })
+      assert.equal(agent.calls[1].method, 'CancelTask')
+      assert.deepEqual(agent.calls[1].params, { id: 't9' })
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：auth-required 立即返回，不轮询到超时', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, { task: { id: 't2', contextId: 'c', status: { state: 'TASK_STATE_AUTH_REQUIRED' } } })))
+    })
+    try {
+      const authClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      const started = Date.now()
+      const out = await authClient.sendForText('hi')
+      assert.equal(out.task.status.state, 'auth-required')
+      assert.ok(Date.now() - started < 1500)
+      assert.equal(agent.calls.length, 1)
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：超时 → A2aTimeoutError 含最后状态与 task_id', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, { task: { id: 't3', contextId: 'c', status: { state: 'TASK_STATE_WORKING' } } })))
+    })
+    try {
+      const slowClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 300 })
+      await assert.rejects(
+        () => slowClient.sendForText('hi'),
+        (error) => error instanceof A2aTimeoutError
+          && /最后一次看到的状态/.test(error.message)
+          && /task_id=t3/.test(error.message),
+      )
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：4xx + JSON-RPC error body 保留错误码', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32006, message: 'outbound target mismatch' } }))
+    })
+    try {
+      const rejectClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await assert.rejects(
+        () => rejectClient.sendForText('hi'),
+        (error) => error.code === -32006 && /outbound target mismatch/.test(error.message),
+      )
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：错误响应体截断到 2KB', async () => {
+    const agent = await startAgent(v10Card, (_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' })
+      res.end('x'.repeat(10_000))
+    })
+    try {
+      const bigClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await assert.rejects(
+        () => bigClient.sendForText('hi'),
+        (error) => /HTTP 500/.test(error.message) && error.message.length < 2_200,
+      )
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：同源路径越界时 POST 打到 target 路径', async () => {
+    const tenantB = await startRaw((_req, res) => {
+      res.writeHead(200)
+      res.end('{}')
+    })
+    const srv = await startAgent({ ...v03Card, url: '/tenantB/admin' }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV03)))
+    })
+    try {
+      const scopedClient = new A2aClient({
+        baseUrl: `${srv.origin}/tenantA`,
+        allowPatterns: [`${srv.origin}/tenantA`],
+        timeoutMs: 5000,
+      })
+      await scopedClient.sendForText('hi')
+      assert.equal(srv.calls[0].url, '/tenantA')
+      assert.equal(tenantB.requests.length, 0)
+    } finally {
+      await srv.close()
+      await tenantB.close()
     }
   })
 

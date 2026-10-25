@@ -30,6 +30,14 @@ import {
   type EndpointDecision,
   type NormalizedTarget,
 } from './endpoint.ts'
+import {
+  methodsFor,
+  negotiateVersion,
+  normalizeSendResult,
+  normalizeTaskResult,
+  versionHeader,
+  type WireVersion,
+} from './compat.ts'
 
 export { matchesAllowlist } from './endpoint.ts'
 
@@ -75,37 +83,19 @@ export class A2aRpcError extends Error {
   }
 }
 
-interface NormalizedBase {
-  rpcUrl: string
-  cardUrl: (path: string) => string
+/** 轮询到总预算仍未结束：携带最后状态，便于模型判断是 agent 卡住还是客户端不认识状态。 */
+export class A2aTimeoutError extends A2aRpcError {
+  constructor(message: string) {
+    super(-1, message)
+    this.name = 'A2aTimeoutError'
+  }
 }
 
 export class A2aClient {
-  private base: NormalizedBase | undefined
   private target: NormalizedTarget | undefined
   private cardState: { card?: AgentCard; decision: EndpointDecision } | undefined
 
   constructor(private readonly options: A2aClientOptions) {}
-
-  /** 规范化基地址：容忍带 card 路径 / JSON-RPC 路径的输入。 */
-  private normalize(): NormalizedBase {
-    if (this.base !== undefined) return this.base
-    let url: URL
-    try {
-      url = new URL(this.options.baseUrl)
-    } catch {
-      throw new Error(`无效的 A2A baseUrl: ${this.options.baseUrl}`)
-    }
-    // 输入直接指向 well-known 卡片或根路径时，JSON-RPC 都打到站点根。
-    const origin = url.origin
-    const path = url.pathname.replace(/\/+$/, '')
-    const rpcPath = path !== '' && !path.startsWith('/.well-known') ? `${path}/` : '/'
-    this.base = {
-      rpcUrl: `${origin}${rpcPath}`,
-      cardUrl: (wellKnown: string) => `${origin}${wellKnown}`,
-    }
-    return this.base
-  }
 
   /**
    * 构造出站消息的 metadata：始终带 `kind`（默认 message），
@@ -119,39 +109,62 @@ export class A2aClient {
     }
   }
 
-  private headers(extra?: Record<string, string>): Record<string, string> {
+  private rpcHeaders(url: string, version: WireVersion, extra?: Record<string, string>): Record<string, string> {
     return {
       'Content-Type': 'application/json',
-      'X-A2A-Version': '0.3.0',
-      ...(this.options.bearerToken !== undefined
+      'X-A2A-Version': versionHeader(version),
+      ...(this.options.bearerToken !== undefined && matchesAllowlist(this.options.allowPatterns ?? ['*'], url)
         ? { Authorization: `Bearer ${this.options.bearerToken}` }
         : {}),
       ...(extra ?? {}),
     }
   }
 
-  private async rpc<T>(method: string, params?: unknown): Promise<T> {
+  /** 一次调用的总预算：发现 / RPC / 轮询共用同一个 deadline。 */
+  private deadline(): number {
+    return Date.now() + (this.options.timeoutMs ?? 120_000)
+  }
+
+  /**
+   * 发一次 JSON-RPC：端点与方法由卡片协商结果决定；`deadline` 由调用方传入，
+   * 让发现 / 调用 / 轮询共享同一份预算。
+   */
+  private async rpc<T>(method: string, params?: unknown, deadline?: number): Promise<T> {
+    const { card, decision } = await this.ensureCard()
+    const version = negotiateVersion(card)
+    const remaining = Math.max((deadline ?? this.deadline()) - Date.now(), 1)
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       method,
       ...(params !== undefined ? { params } : {}),
     })
-    const response = await fetch(this.normalize().rpcUrl, {
-      method: 'POST',
-      headers: this.headers(),
-      body,
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
-    })
+    let response: Response
+    try {
+      response = await this.fetchFn()(decision.url, {
+        method: 'POST',
+        headers: this.rpcHeaders(decision.url, version),
+        body,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(remaining),
+      })
+    } catch (error) {
+      throw new A2aRpcError(-1, `请求失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new A2aRpcError(-1, `redirect not followed: ${response.status}`)
+    }
+    const text = await response.text().catch(() => '')
     if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new A2aRpcError(-1, `HTTP ${response.status} ${text.slice(0, 200)}`)
+      const rpcError = rpcErrorOf(parseJson(text))
+      if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data)
+      throw new A2aRpcError(-1, `HTTP ${response.status} ${truncateBody(text)}`)
     }
-    const payload = (await response.json()) as JsonRpcResponse
-    if ('error' in payload) {
-      throw new A2aRpcError(payload.error.code, payload.error.message, payload.error.data)
-    }
-    return payload.result as T
+    const payload = parseJson(text)
+    if (payload === undefined) throw new A2aRpcError(-1, 'invalid JSON-RPC response')
+    const rpcError = rpcErrorOf(payload)
+    if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data)
+    return (payload as { result?: unknown }).result as T
   }
 
   private targetInfo(): NormalizedTarget {
@@ -270,8 +283,11 @@ export class A2aClient {
     /** 出站 metadata.kind（默认 message）。 */
     kind?: A2aOutboundKind
   }): Promise<A2aTask> {
+    const deadline = this.deadline()
+    const { card } = await this.ensureCard()
+    const version = negotiateVersion(card)
     const messageId = crypto.randomUUID()
-    const result = await this.rpc<A2aTask | { kind: 'message' }>('message/send', {
+    const result = await this.rpc<unknown>(methodsFor(version).send, {
       message: {
         kind: 'message',
         role: 'user',
@@ -280,34 +296,26 @@ export class A2aClient {
         metadata: this.messageMetadata(options?.kind),
         ...(options?.contextId !== undefined ? { contextId: options.contextId } : {}),
       },
-    })
-    if (result !== null && typeof result === 'object' && result.kind === 'message') {
-      // 非任务型对端：把 agent 消息包装为完结任务。
-      const message = result as { parts?: Array<{ kind: string; text?: string }> }
-      const reply = (message.parts ?? [])
-        .filter((p) => p.kind === 'text' && typeof p.text === 'string')
-        .map((p) => p.text as string)
-        .join('\n')
-      return {
-        kind: 'task',
-        id: 'inline',
-        contextId: options?.contextId ?? 'inline',
-        status: { state: 'completed', timestamp: new Date().toISOString() },
-        artifacts: [{ kind: 'artifact', artifactId: 'inline', parts: [{ kind: 'text', text: reply }] }],
-      }
-    }
-    let task = result as A2aTask
-    const deadline = Date.now() + (this.options.timeoutMs ?? 120_000)
-    while (!isTerminal(task) && Date.now() < deadline) {
-      await sleep(Math.min(options?.pollMs ?? 1000, Math.max(deadline - Date.now(), 1)))
-      task = await this.getTask(task.id)
+    }, deadline)
+    let task = normalizeSendResult(result, options?.contextId ?? 'inline')
+    while (!shouldStop(task)) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await sleep(Math.min(options?.pollMs ?? 1000, remaining))
+      if (Date.now() >= deadline) break
+      task = await this.getTask(task.id, deadline)
       options?.onEvent?.({
         kind: 'status-update',
         taskId: task.id,
         contextId: task.contextId,
         status: task.status,
-        final: isTerminal(task),
+        final: shouldStop(task),
       })
+    }
+    if (!shouldStop(task)) {
+      throw new A2aTimeoutError(
+        `轮询超时：最后一次看到的状态是 ${stateLabel(task)}，task_id=${task.id}`,
+      )
     }
     return task
   }
@@ -321,11 +329,14 @@ export class A2aClient {
     /** 出站 metadata.kind（默认 message）。 */
     kind?: A2aOutboundKind
   }): Promise<TaskEvent[]> {
+    const deadline = this.deadline()
+    const { card, decision } = await this.ensureCard()
+    const version = negotiateVersion(card)
     const messageId = crypto.randomUUID()
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: 'stream-' + Date.now().toString(36),
-      method: 'message/stream',
+      method: methodsFor(version).stream,
       params: {
         message: {
           kind: 'message',
@@ -337,11 +348,12 @@ export class A2aClient {
         },
       },
     })
-    const response = await fetch(this.normalize().rpcUrl, {
+    const response = await this.fetchFn()(decision.url, {
       method: 'POST',
-      headers: this.headers({ Accept: 'text/event-stream' }),
+      headers: this.rpcHeaders(decision.url, version, { Accept: 'text/event-stream' }),
       body,
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
     })
     const contentType = String(response.headers.get('content-type') ?? '')
     if (!response.ok) {
@@ -401,12 +413,18 @@ export class A2aClient {
     return events
   }
 
-  async getTask(taskId: string): Promise<A2aTask> {
-    return this.rpc<A2aTask>('tasks/get', { taskId })
+  async getTask(taskId: string, deadline?: number): Promise<A2aTask> {
+    const { card } = await this.ensureCard()
+    const version = negotiateVersion(card)
+    const result = await this.rpc<unknown>(methodsFor(version).getTask, { id: taskId }, deadline)
+    return normalizeTaskResult(result)
   }
 
   async cancelTask(taskId: string): Promise<A2aTask> {
-    return this.rpc<A2aTask>('tasks/cancel', { taskId })
+    const { card } = await this.ensureCard()
+    const version = negotiateVersion(card)
+    const result = await this.rpc<unknown>(methodsFor(version).cancel, { id: taskId })
+    return normalizeTaskResult(result)
   }
 
   /** 便捷：send() + 提取 artifact 文本（工具层使用）。 */
@@ -419,8 +437,9 @@ export class A2aClient {
     kind?: A2aOutboundKind
   }): Promise<{ task: A2aTask; text: string }> {
     if (options?.preferStream) {
-      const card = await this.card().catch(() => undefined)
-      if (card === undefined || card.capabilities?.streaming) {
+      const { card } = await this.ensureCard()
+      const version = negotiateVersion(card)
+      if (card !== undefined && version === 'v0.3' && card.capabilities?.streaming === true) {
         const events = await this.sendStream(text, (e) => options.onEvent?.(e), {
           contextId: options.contextId,
           ...(options.kind !== undefined ? { kind: options.kind } : {}),
@@ -456,8 +475,38 @@ function resolveCardUrl(card: AgentCard): string | undefined {
   return undefined
 }
 
-function isTerminal(task: A2aTask): boolean {
-  return ['completed', 'failed', 'canceled', 'rejected'].includes(task.status.state)
+const STOP_STATES: readonly string[] = ['completed', 'failed', 'canceled', 'rejected', 'input-required', 'auth-required', 'unknown']
+
+/** 停止轮询：终态，或需要人/授权/未知状态（后三者不是"完成"，但继续轮询也没意义）。 */
+function shouldStop(task: A2aTask): boolean {
+  return STOP_STATES.includes(task.status.state)
+}
+
+/** 展示用状态：未知状态优先显示原始枚举值。 */
+function stateLabel(task: A2aTask): string {
+  if (task.status.state === 'unknown') return task.status.rawState ?? 'unknown'
+  return task.status.state
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+function rpcErrorOf(value: unknown): { code: number; message: string; data?: unknown } | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const error = (value as { error?: unknown }).error
+  if (error === null || typeof error !== 'object') return undefined
+  const record = error as Record<string, unknown>
+  if (typeof record['code'] !== 'number' || typeof record['message'] !== 'string') return undefined
+  return { code: record['code'], message: record['message'], data: record['data'] }
+}
+
+function truncateBody(text: string): string {
+  return text.length > 2_000 ? `${text.slice(0, 2_000)}…` : text
 }
 
 function sleep(ms: number): Promise<void> {
