@@ -1,46 +1,97 @@
-# dsh-a2a（@celumin fork）
+# dsh-a2a（@celumin fork）0.4.0
 
-DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件。
+DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件：既把 DSH agent 暴露为标准 A2A 服务器，也让任意 DSH agent 通过 `a2a_*` 工具呼叫远端 A2A agent。
 
 > 本仓库是 [zyfgood/dsh-a2a](https://github.com/zyfgood/dsh-a2a) 的 fork，发布为 `@celumin/dsh-a2a`。
-> 相对上游包含尚未合并的 PR：出站 `metadata.from` / `metadata.kind` 与 A2A v1.0 `supportedInterfaces` 卡片兼容。
+> **0.4.0 起走自维护线**：协议对齐与出站能力明显强于上游 `0.3.x`，语义上不再等同上游版本；fork 点与改动见文末「版本与 fork」。
 
-DSH 内置的互操作走 ACP + MCP，不包含 A2A；本插件补上这块拼图，**双向**打通 A2A 生态（Google ADK、a2ajava / a2a-python SDK、各类 agent 网关）：
+零运行时依赖（纯 Node ≥20 stdlib + 全局 `fetch`），与 [dsh-feishu-bot](https://github.com/zyfgood/dsh-feishu-bot) 同一插件体系。
 
-- **服务器方向（入站）**：把 DSH agent 暴露为标准 A2A 服务器
-  - Agent Card：`/.well-known/agent-card.json`（0.3.x）与 `/.well-known/agent.json`（0.2.x 兼容）
-  - JSON-RPC 2.0：`message/send`（同步）、`message/stream`（SSE 流式）、`tasks/get`、`tasks/cancel`、`tasks/resubscribe`（断线续订）、`agent/authenticatedExtendedCard`
-  - 任务生命周期 `submitted → working → completed/failed/canceled`，支持 `input-required` 暂停与 taskId 多轮续答
-  - 版本协商（`A2A-Version` / `X-A2A-Version` 头）、可选 Bearer 鉴权、CORS、单轮超时、任务 TTL 回收
-- **客户端方向（出站）**：注册 `a2a_*` 模型工具，让任意 DSH agent 直接呼叫远端 A2A agent
-  - `a2a_discover` / `a2a_send` / `a2a_task_status` / `a2a_cancel`
-  - 地址白名单（`clientAllowPatterns`）控制 agent 可呼叫的目标
-- **可视化运维面板**（Web client 半，v0.2.0）：Plugins → @celumin/dsh-a2a 的配置卡与设置 Plugins 分区的 A2A 标签页
-  - 服务器状态：运行中/模式/地址/协议版本/鉴权 + curl 验证命令一键复制
-  - 实时任务板：最近任务的状态徽标/上下文/产物数，非终态任务一键取消（5s 自动刷新）
-  - 远端 agent 目录：保存常用远端地址，浏览器直连拉取其 Agent Card（名称/版本/技能）
-  - 数据来自 A2A 服务器自带的 `/admin/status`、`/admin/tasks` 端点（Bearer 门禁同 JSON-RPC）
+---
 
-零运行时依赖（纯 Node ≥20 stdlib + 全局 fetch），与 [dsh-feishu-bot](https://github.com/zyfgood/dsh-feishu-bot) 同一插件体系。
+## 0. 0.4.0 相对 0.3.x 的改进
+
+### 出站：终于能打通 v1.0 目标
+
+0.3.x 的 `a2a_send` 对「网关 + v1.0 agent」这条链路不可用，表现是 404 / `-32601` / 拿到结果却解析失败。0.4.0 修的是四处**客户端缺陷**：
+
+| 缺陷 | 0.3.x 的行为 | 0.4.0 的行为 |
+|---|---|---|
+| 卡片 URL 丢 base path | 目标 `http://gw:9090/a2a/x` 却去请求 `http://gw:9090/.well-known/...` | 保留 base path，按 `{base}/.well-known/agent-card.json` 探测 |
+| RPC URL 多尾斜杠 | `POST /a2a/x/` 打不中 `POST /a2a/x` | 不追加尾斜杠 |
+| method 名写死 | 永远发 `message/send`/`message/stream` | 按卡片协商：v1.0 → `SendMessage`/`GetTask`/`CancelTask`；v0.3 → `message/send` 等 |
+| 只认 v0.3 响应形状 | v1.0 的 `{task}`、`TASK_STATE_*`、无 `kind` 的 part 解析失败 | 解包 `{task}`/`{msg}`、状态归一、part 按成员判别 |
+
+### 错误对模型可见
+
+`a2a_send` / `a2a_task_status` / `a2a_cancel` 失败时输出 `error_code` 与 `retryable`：
+
+- `-32005`（call depth exceeded）/ `-32006`（outbound credential unavailable / outbound target mismatch）→ `retryable=false`
+- `-32003`（上游不可用）→ `retryable=true`
+- 4xx 响应体是 JSON-RPC error 时保留原始错误码；传输层/超时统一 `-1`
+- 超时不再返回空 detail，而是 `轮询超时：最后一次看到的状态是 …, task_id=…`
+
+### 端点选择有明确的授权规则
+
+- RPC 端点以**卡片里的服务地址**为准（网关给 `{base}/a2a/{id}`，pi-a2a 给 `/rpc`），客户端不再自己猜路径。
+- **同源**端点还要过 `clientAllowPatterns` 的**路径作用域**：`/tenantA` 的白名单不会被卡片引到 `/tenantB`。
+- **跨源**端点默认忽略并回退到输入路径（不是拒绝调用），只有新增的 `clientCardEndpointPatterns`（完整 URL 前缀、默认空、`*` 不生效）显式放行才采用并携带 Bearer。
+- 诊断 WARN 只记录 origin 与原因码，不回显卡片 URL。
+
+### 更稳的网络行为
+
+- 卡片与 RPC 都**不跟随重定向**（`redirect: 'manual'`），避免 POST 变 GET / 凭证越界。
+- 发现、调用、轮询共用一份总预算；单次卡片请求上限 5s。
+- 卡片发现失败时**降级**（输入路径 + v0.3），错误 detail 同时给 `RPC 失败：…；卡片发现失败：…`。
+- `input-required` / `auth-required` / 未知状态立即返回，不空转到超时；未知状态会保留原始枚举值。
+
+### 双 profile：tui 与 web 都能装
+
+**同一个包同时支持 tui 与 web profile**，无需额外配置：
+
+```bash
+dsh plugin --profile tui add @celumin/dsh-a2a
+dsh plugin --profile web add @celumin/dsh-a2a
+```
+
+- 宿主半（A2A 服务器 + `a2a_*` 工具 + agent 会话）与 profile 类型无关；浏览器半只在 web 前端加载。
+- 两个 profile **同时运行**时改其中一个的 `port`（例如 web 7310、tui 7311），否则 `EADDRINUSE`；两者还共用 `$DSH_HOME/a2a/context-sessions.json`，新会话写入可能互相覆盖。
+- 不要删 `dsh.client` 段：它是 web 运维面板的加载声明（删掉后 web 服务照常跑，但面板不渲染）。
+
+### 其它
+
+- 新增配置 `clientCardEndpointPatterns`；`clientAllowPatterns` 语义保持不变。
+- `a2a_discover` 返回 `negotiated_version` 与 `rpc_endpoint`，并同时识别 `security` 与 `securitySchemes`。
+- 文档补齐：`cordis.patch.yml` 的正确写法、web/tui 双示例、名字一致性、已知限制。
+
+---
 
 ## 一、安装
 
 ```bash
-# 官方 CLI 一键安装（npm 渠道，推荐；bundle patch 自动挂载）
-dsh plugin --profile <name> add @celumin/dsh-a2a
+# npm（推荐；bundle patch 自动挂载）
+dsh plugin --profile <tui|web> add @celumin/dsh-a2a
 
-# 或 GitHub
-dsh plugin --profile <name> add github:celumin/dsh-a2a
+# 或 GitHub（无 npm 凭据时）
+dsh plugin --profile <tui|web> add github:celumin/dsh-a2a#v0.4.0
 
 # 或本地路径
-dsh plugin --profile <name> add file:D:/DSHProjects/dsh-a2a
+dsh plugin --profile <tui|web> add file:/path/to/dsh-a2a
 ```
 
-> npm 裸名 `dsh-a2a` 是另一个无关项目（TtTRz/dsh-a2a），本 fork 发布在 `@celumin` scope 下（上游为 `@zyfgood/dsh-a2a`），安装时请带 scope。
+> npm 裸名 `dsh-a2a` 是另一个无关项目（TtTRz/dsh-a2a），本 fork 在 `@celumin` scope 下，安装时请带 scope。
 
-重启 profile 后生效。默认监听 `127.0.0.1:7310`。
+重启 profile 后生效，默认监听 `127.0.0.1:7310`。`lib/` 预构建产物随包发布，安装即用。
 
-> `lib/` 预构建产物随仓库发布，安装即用，无需构建脚本（无 pnpm ≥10 的 `allowBuilds` 步骤）。
+安装后确认：
+
+```bash
+dsh --profile tui --dump-config | grep -n a2a   # 应出现 id: a2a 行
+```
+
+排查安装失败：先看 `pnpm.log`，再看**其它插件**的 peer 兼容性拒绝，再看 pnpm 权限问题（`ERR_PNPM_STORE_DIR_OPEN_OPERATION_LOCK`），最后才看 `dsh.client`（它只影响 web 浏览器半）。
+
+---
 
 ## 二、快速验证
 
@@ -80,9 +131,16 @@ curl -N -X POST http://127.0.0.1:7310/ \
 
 SSE 依次推送 `status-update(working)` → `artifact-update` → `status-update(completed, final=true)` 后自然收流。
 
-## 三、配置项
+---
 
-profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
+## 三、配置
+
+配置入口是 **profile 的 `cordis.patch.yml`** 里追加/修改 `id: a2a` 条目；**不要**改包内 `cordis.patch.yml`（会被更新覆盖），也不要改 `cordis.yml`（空根入口）。
+
+> 旧文档里的 `a2a.json` 写法**已过时**：新版是扁平 schema、不读文件，入口只有 `cordis.patch.yml`。
+> patch 是**整体替换** `config`，不是深合并——想保留的配置一次写全。
+
+**web profile 示例**（可结合浏览器面板使用）：
 
 ```yaml
 - id: a2a
@@ -90,7 +148,34 @@ profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
   config:
     port: 7310
     mode: agent
+    peerName: dsh-agent-lenovo
+    bearerToken: env:A2A_TOKEN
+    publicUrl: http://192.168.10.10:7310
 ```
+
+**tui profile 示例**（显式指定模型，避免回退到宿主默认模型）：
+
+```yaml
+- id: a2a
+  name: '@celumin/dsh-a2a'
+  config:
+    port: 7311
+    mode: agent
+    provider: agnes-ai
+    model: agnes-3.0-flash
+    peerName: dsh-agent-lenovo
+    bearerToken: env:A2A_TOKEN
+    tools: true
+    clientAllowPatterns:
+      - http://127.0.0.1:9090
+      - http://192.168.10.0/24   # 仅示例：白名单按 host/port/路径前缀匹配
+```
+
+- 密钥用 `env:A2A_TOKEN` 形式，不要把明文 token 写进 patch。
+- web 运维面板的 base URL / Bearer 存在浏览器 `localStorage`/`sessionStorage`，**不写进 profile 的 `a2a` 行**。
+- 改 `port` / `mode` / `provider` 请编辑 `cordis.patch.yml`，然后重启 profile。
+
+### 配置项
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -102,7 +187,7 @@ profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
 | `peerName` | 同 `agentName` | 本端 peer 名：出站消息写入 `metadata.from`，供对端把回话路由回来 |
 | `skills` | 内置一条 dsh-agent 技能 | Agent Card 技能清单 |
 | `mode` | `agent` | 入站处理模式：`agent` / `llm` / `echo`（见下） |
-| `provider` / `model` | — | 模型来源：`llm` 模式直答，`agent` 模式创建会话时写入；未配置时回退宿主默认模型（GUI 的默认模型，即 profile 的 `agent-default-model` 分节） |
+| `provider` / `model` | — | 模型来源：`llm` 模式直答，`agent` 模式创建会话时写入；tui 下建议显式配置 |
 | `systemPrompt` / `maxHistory` | — | `llm` 模式参数（`ctx.llm` 直答，短期记忆按 `maxHistory`） |
 | `agentId` | 自动 | `agent` 模式：固定复用 `ctx.agents` 中某会话；不配置则按 contextId 自动创建 |
 | `agentPreset` | GUI 默认预设 | 自动创建会话的 preset（决定 agent 可用的工具集） |
@@ -111,36 +196,115 @@ profile 的 `cordis.patch.yml`（或本包 `cordis.patch.yml` 默认层）：
 | `turnTimeoutMs` | `600000` | 单轮执行上限，超时任务置 `failed` |
 | `taskTtlMs` | `3600000` | 已完结任务内存保留时长（之后 TTL 回收） |
 | `tools` | `true` | 是否注册 `a2a_*` 出站工具 |
-| `clientAllowPatterns` | `['*']` | 出站白名单：`'*'`、`https://a2a.example.com/`、`https://*.example.com/`、`'*:7310'` |
-| `clientTimeoutMs` | `120000` | 出站调用超时 |
+| `clientAllowPatterns` | `['*']` | 目标白名单：`'*'`、`https://a2a.example.com/`、`https://*.example.com/`、`'*:7310'`；同时约束**同源**卡片端点的路径作用域 |
+| `clientCardEndpointPatterns` | `[]` | **跨源**卡片端点白名单：完整 URL 前缀（`https://other/rpc`），默认全拒，`*` 不生效 |
+| `clientTimeoutMs` | `120000` | 单次调用总预算：发现 + RPC + 轮询共用 |
 
 ### 三种入站模式
 
 - **`agent`（默认）**：每个 A2A `contextId` 对应一个持久 DSH agent 会话（完整工具/技能/工作目录），跨任务续答；映射可落盘跨重启恢复。会话忙时新消息走 `steer`（下一 step 边界消费）。
-- **`llm`**：`ctx.llm` 直答（自包含轻量模式，不建 agent 会话，短期记忆按 `maxHistory`）。
+- **`llm`**：`ctx.llm` 直答（不建 agent 会话，短期记忆按 `maxHistory`）。
 - **`echo`**：回显原文，验证链路。
+
+### 名字一致性（配了却永不命中，通常是这里）
+
+三处名字必须一致，网关**不做**名字映射：
+
+| 位置 | 写什么 | 例子 |
+|---|---|---|
+| 本端 `peerName` | 出站 `metadata.from` 的值 | `dsh-agent-lenovo` |
+| 网关的 `A2A_AUTH_TOKENS` | `caller:token` 里的 caller | `dsh-agent-lenovo:<token>` |
+| 网关的 `A2A_AGENT_OUTBOUND_AUTH` | 五段格式的第一段 caller | `dsh-agent-lenovo:pi-gw-agent:Authorization:pi-gw:…` |
+| 未来 mDNS 广播的 `name` | 与其他位置一致 | `dsh-agent-lenovo` |
+
+不一致的表现是「配置看起来对，但永远不命中 / 永远 `-32006`」。
+
+> 网关的 `A2A_AGENT_OUTBOUND_AUTH` 里 `token_ref` 是**环境变量名**，它的值是该 header 的**完整值**——`Authorization` 要写成 `Bearer test`（不是裸 `test`）。
+
+---
 
 ## 四、出站：agent 调用远端 A2A
 
 插件默认注册 4 个模型工具（`tools: false` 关闭）：
 
-| 工具 | 对应协议方法 | 用途 |
+| 工具 | v1.0 方法 | v0.3 方法 | 用途 |
+|---|---|---|---|
+| `a2a_discover` | `GET /.well-known/agent-card.json` | 同 | 拉卡片；返回 `negotiated_version`、`rpc_endpoint`、鉴权需求 |
+| `a2a_send` | `SendMessage` | `message/send` | 发消息并等待结果；`kind`（`message`/`request`/`result`，默认 `message`） |
+| `a2a_task_status` | `GetTask` | `tasks/get` | 查询任务状态 |
+| `a2a_cancel` | `CancelTask` | `tasks/cancel` | 取消任务 |
+
+### target 怎么给
+
+`target` 只接受三种形态：
+
+1. **origin 根**：`http://127.0.0.1:7310`
+2. **路径基址**：`http://gw:9090/a2a/pi-gw-agent`
+3. **卡片 URL**：`http://gw:9090/a2a/pi-gw-agent/.well-known/agent-card.json`（自动剥离后缀）
+
+**不要把卡片里的「服务 URL」（如 pi-a2a 的 `/rpc`）当 target**——它和「路径基址」无法区分，会探测失败并降级。
+
+**调 pi-a2a 的前置条件**：它广告的是 `http://<lanIp>:<port>/rpc`。target 必须用**同一个 host**（例如 `http://192.168.10.224:38845`）；用 `127.0.0.1` 访问而卡片写的是 LAN IP 会被判为跨源并回退。要么对齐 host，要么把该端点加进 `clientCardEndpointPatterns`。
+
+### 版本协商与流式
+
+- 版本来源（同一 JSONRPC 接口条目）：`supportedInterfaces[].protocolVersion` → `protocolVersions[]` → `protocolVersion`。
+- 没有可用声明（含卡片取不到）→ **默认 v0.3**（v1.0 的卡片有强制标记，缺失通常意味着旧实现）。
+- `X-A2A-Version` 随协商结果发 `1.0` / `0.3`；卡片 GET 不带版本头。
+- **流式只对 v0.3 且 `streaming:true` 启用**；v1.0 一律同步（`SendStreamingMessage` 本轮不实现）。
+- `GetTask` / `CancelTask` 都发 `params.id`（0.3 规范即 `id`）。
+
+### 错误码与重试
+
+| `error_code` | `retryable` | 含义 |
 |---|---|---|
-| `a2a_discover` | `GET /.well-known/agent-card.json` | 拉取远端 Agent Card（能力/技能/鉴权） |
-| `a2a_send` | `message/stream`（自动降级 `message/send` + 轮询） | 发消息并等待远端最终回复；`kind` 参数（`message`/`request`/`result`，默认 `message`）对应出站 `metadata.kind` |
-| `a2a_task_status` | `tasks/get` | 查询远端任务状态 |
-| `a2a_cancel` | `tasks/cancel` | 取消远端任务 |
+| `-32005` | `false` | 网关环路保护（call depth exceeded） |
+| `-32006` | `false` | 出站凭据不可用 / 目标不匹配 |
+| `-32003` | `true` | 上游不可用 |
+| `-1` | `true` | 传输层错误 / 超时 / 重定向 / HTTP 状态 |
+| 其他 | 省略 | 按原错误码处理 |
 
-对话示例：「用 a2a_send 呼叫 http://其它机器:7310/ 的 agent，问它有哪些技能，把结果汇总给我」。
+插件**不会自动重试**；`retryable` 只是给模型的建议。`-32003` 且 `kind=request` 时重发可能产生重复副作用，请先确认 task 状态。
 
-## 五、开发
+### 调用示例
+
+> 用 `a2a_send` 呼叫 `http://192.168.10.224:38845`，`kind=request`，问它有哪些技能，把结果汇总给我。
+
+对「消息投递型」agent（如 pi-a2a）请用 `kind=request`：`kind=message` 只入库、不触发处理，会得到空洞的成功。
+
+---
+
+## 五、已知限制
+
+- **出站 message 仍是 v0.3 形状**（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi 与常见实现宽容；**严格 ProtoJSON v1.0 服务端**（要求 `ROLE_USER`、无 `kind`）不在 0.4.0 支持范围。
+- **不做 v1.0 流式事件**（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
+- **经网关注册的卡片接口条目恒为 1.0**：网关把 `supportedInterfaces[].protocolVersion` 固定写成 `1.0`，但顶层 `protocolVersions` 保留注册方声明。客户端按接口条目优先，所以经网关一律按 v1.0 调用；把 v0.3 上游挂在网关后面会被用 `SendMessage` 调用（网关侧问题，本轮不修）。
+- 网关的 `POST /a2a/name/{agentName}` 路由没有卡片端点，只能走降级 v0.3。
+- 网关的深度闸目前只识别 `message/send` / `message/stream`；v1.0 的 `SendMessage` 不经过深度闸（网关侧问题，客户端无法弥补）。
+- 卡片发现**不做**进程级缓存：每次 `a2a_send` 重新发现（1–2 次 GET）。短 TTL 缓存列为 0.5.0 候选。
+
+---
+
+## 六、升级（0.3.x → 0.4.0）
+
+- 直接换版本即可；配置 schema 向后兼容，新增 `clientCardEndpointPatterns`（默认 `[]`，不配置时行为不变）。
+- 行为变化（有意为之）：跨源卡片端点现在默认被忽略并回退；同源端点受 `clientAllowPatterns` 路径约束；`-32601` 不再静默换名重发；超时抛结构化错误。
+- 仍在使用 `a2a.json` 的旧配置请改到 `cordis.patch.yml`。
+- 回退到 0.3.x：`dsh plugin --profile <name> add @celumin/dsh-a2a@0.3.1`。
+
+---
+
+## 七、开发
 
 ```bash
-pnpm verify   # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
-pnpm test     # 构建 DSH 无关核心 + 40 项端到端冒烟测试
-pnpm build:local  # 本地全量构建 lib/（shims 类型校验，产物与宿主构建一致）
-pnpm build    # 完整构建（需要宿主环境提供 @deepseek-ai/* peer 依赖）
+pnpm verify       # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
+pnpm test         # 核心构建 + smoke（56）+ compat 纯函数单测（37）
+pnpm build:local  # 本地全量构建 lib/（shims 类型校验）
+pnpm build        # 宿主环境全量构建（需要真实 @deepseek-ai/* 类型）
+npm run prepack   # 发布前构建（tsconfig.emit.json + shims）
 ```
+
+> 本机独立检出时，`pnpm build` 可能因宿主注入的 `@deepseek-ai/*` 类型版本差异而报错（`bridge.ts` / `ContentBlock`），发布用 `npm run prepack`；这不影响 `npm test` 与运行。
 
 代码结构：
 
@@ -148,10 +312,12 @@ pnpm build    # 完整构建（需要宿主环境提供 @deepseek-ai/* peer 依�
 src/
 ├── index.ts       插件入口：Config schema + apply()
 ├── protocol.ts    A2A 类型 / JSON-RPC / Agent Card（纯函数，零依赖）
+├── endpoint.ts    target 归一 / 卡片候选 / 端点授权（纯函数，零依赖）
+├── compat.ts      版本协商 / 方法表 / 响应归一 / 错误分类（纯函数，零依赖）
 ├── store.ts       任务存储 + SSE 事件中枢（事件缓冲、订阅、TTL）
 ├── server.ts      HTTP 服务器：card / message/send / message/stream(SSE) / tasks/* / admin/*
 ├── bridge.ts      DSH 桥接：echo / llm / agent 三种 TaskRunner
-├── client.ts      出站 A2A 客户端（fetch + SSE 解析）
+├── client.ts      出站 A2A 客户端（发现 → 协商 → 收发 → 轮询）
 ├── tools.ts       a2a_* 模型工具注册
 └── persistence.ts contextId → 会话映射落盘
 client/
@@ -160,32 +326,43 @@ client/
 
 设计说明：
 
-- `protocol` / `store` / `server` / `client` 不依赖任何 DSH 包，可独立构建与测试；DSH 桥接收敛在 `bridge.ts` / `tools.ts` / `index.ts`。
-- **agent 模式必须有模型**：agent-loop 不自动兜底 provider/model，缺失时提示词组装里的 `{{model}}` 无值，每轮立即报错（表现为「无文本输出」）。插件因此按「配置 provider/model → 回退 `ctx.agentDefaultModel.currentSelection()`」解析，两者都拿不到时直接返回明确的失败说明；本轮若以 `turn/end reason=error` 结束，错误原因会被回给客户端而不是笼统占位符。改 profile 的默认模型后，新建的 A2A 会话即生效（已存在的会话沿用原模型，删 `$DSH_HOME/a2a/context-sessions.json` 条目可重建）。
-- 任务 id 参数：规范写法 `params.id` 与本插件旧约定 `params.taskId` 都接受（`tasks/get` / `tasks/cancel` / `tasks/resubscribe`）。
-- 出站元数据：`message.metadata` 恒带 `kind`（默认 `message`，`a2a_send` 的 `kind` 参数可指定 `request`/`result`）；配置 `peerName` 后附带 `from`，供对端（如 pi-a2a）路由回话。
-- 卡片解析兼容：顶层 `url`（0.2/0.3）与 A2A v1.0 的 `supportedInterfaces[].url` 两种形态都接受，仅 v1.0 形态的卡片也能发现。
-- `input-required` 事件带 `final=true` 关闭当轮 SSE，但任务保持非终态，客户端可凭 `taskId` 续答（续答复用同一任务与 history）。
-- `tasks/cancel` 立即广播 `canceled(final=true)`；agent 模式下正在运行的一轮会在 500ms 轮询粒度感知退出并尽力 `interrupt`，不会阻塞后续轮次。
-- 与 A2A 0.2.x 客户端的兼容：旧 card 路径照常服务；0.2 客户端不发送版本头时按同版本处理。
+- `protocol` / `endpoint` / `compat` / `store` / `server` 不依赖任何 DSH 包，可独立构建与测试；DSH 桥接收敛在 `bridge.ts` / `tools.ts` / `index.ts`。
+- **agent 模式必须有模型**：agent-loop 不自动兜底 provider/model，缺失时每轮立即报错（表现为「无文本输出」）。改 profile 默认模型后，新建的 A2A 会话即生效（已存在的会话沿用原模型，删 `$DSH_HOME/a2a/context-sessions.json` 对应条目可重建）。
+- 任务 id 参数：入站同时接受 `params.id` 与旧约定 `params.taskId`；出站统一发规范写法 `id`。
+- 出站元数据：`message.metadata` 恒带 `kind`，配置 `peerName` 后附带 `from`。
+- 卡片解析兼容：顶层 `url` 与 v1.0 的 `supportedInterfaces[].url` 两种形态。
+- `input-required` 事件带 `final=true` 关闭当轮 SSE，但任务保持非终态，可凭 `taskId` 续答。
+- `tasks/cancel` 立即广播 `canceled(final=true)`；agent 模式下正在运行的一轮会在 500ms 轮询粒度感知退出。
 - 不支持的协议面按规范返回明确错误码：push notification `-32003`、批量 JSON-RPC `-32600`。
 
-## 六、mDNS 发现（建议）
+---
 
-- **发现目标**：网关优先，P2P 降级。同时发现网关和目标 agent 时，默认经网关转发（保留鉴权、路由、审计）。
+## 八、mDNS 发现（建议，未来版本）
+
+- **发现目标**：网关优先，P2P 降级。同时发现网关和目标 agent 时，默认经网关转发。
 - **P2P 降级条件**：网关不可达，或显式配置 `MDNS_P2P_ONLY=true`。P2P 不经过网关审计，日志与 UI 必须标明。
 - **TXT 字段**：只放 `proto`/`cardUrl`/`caps`/`ver`/`discoveryVer`，**不放 workspace 名、secret、任何凭据**。
 - **发现层不做鉴权**：TXT 可伪造，候选必须拉 AgentCard + 过 allowlist 才信任。
-- **抄 pi-a2a 的工程细节**：健康探测兜底、`down` 事件不删 peer、地址选择过滤虚拟网卡 + 同网段优先、同机 presence 兜底、实例名带 pid 后缀。
-- **不抄 pi-a2a 的 `wsh` 互认模型**：在 TXT 里放 workspace hash 做发现层鉴权，与 A2A 草案"发现层不可信"原则冲突。
+- **不抄 pi-a2a 的 `wsh` 互认模型**：TXT 里放 workspace hash 做发现层鉴权，与 A2A 草案「发现层不可信」原则冲突。
 
-## 七、与 DSH 内置能力的关系
+---
+
+## 九、与 DSH 内置能力的关系
 
 | 需求 | 用什么 |
 |---|---|
-| 程序化驱动 DSH agent（进程外） | 内置 ACP（`dsh-acp`，`pnpm dsh --profile acp`） |
+| 程序化驱动 DSH agent（进程外） | 内置 ACP（`dsh-acp`） |
 | 挂载外部工具/资源 | 内置 MCP 客户端 |
-| 跨 agent 生态互操作（Google ADK / A2A SDK） | **本插件** |
+| 跨 agent 生态互操作（Google ADK / A2A SDK / pi-a2a / 网关） | **本插件** |
+
+---
+
+## 十、版本与 fork
+
+- **上游**：`https://github.com/zyfgood/dsh-a2a`（fork 点见 `git log` 的初始提交）。
+- **本 fork**：`https://github.com/celumin/dsh-a2a`，npm `@celumin/dsh-a2a`。
+- **0.4.0 改动**：R1（URL 规范化 + method 协商 + v1.0 响应适配）、R5（错误码可见）、R4/R6（配置与名字一致性文档）、端点授权；详见 `docs/requirements.md`。
+- **升级策略**：自维护线按需发布；上游若修复同类问题，优先评估切回上游。
 
 ## License
 
