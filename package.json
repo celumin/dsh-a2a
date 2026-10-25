@@ -43,7 +43,7 @@
     "build:core": "tsc -p tsconfig.test.json",
     "build:local": "tsc -p tsconfig.emit.json",
     "verify": "tsc -p tsconfig.local.json --noEmit",
-    "test": "tsc -p tsconfig.test.json && node tests/smoke.mjs",
+    "test": "tsc -p tsconfig.test.json && node tests/smoke.mjs && node tests/compat.mjs",
     "prepack": "tsc -p tsconfig.emit.json"
   },
   "keywords": [

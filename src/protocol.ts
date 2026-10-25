@@ -161,14 +161,18 @@ export interface AgentInterface {
 export interface AgentCard {
   readonly name: string
   readonly description?: string
-  readonly url: string
+  /** 顶层服务地址；v1.0 实现（如 pi-a2a）可能只给 `supportedInterfaces`。 */
+  readonly url?: string
   /**
    * A2A v1.0 的接口列表形态：部分实现（如 pi-a2a）只给
    * `supportedInterfaces[].url`，不写顶层 `url`。客户端解析时兼容两种形态。
    */
   readonly supportedInterfaces?: readonly AgentInterface[]
   readonly version: string
-  readonly protocolVersion: string
+  /** 单数形态；v1.0 实现可能只给 `protocolVersions[]`。 */
+  readonly protocolVersion?: string
+  /** v1.0 复数形态（可含多个版本）。 */
+  readonly protocolVersions?: readonly string[]
   readonly preferredTransport: 'JSONRPC'
   readonly capabilities: AgentCapabilities
   readonly defaultInputModes: readonly string[]

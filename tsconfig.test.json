@@ -4,6 +4,7 @@
     "src/protocol.ts",
     "src/store.ts",
     "src/server.ts",
+    "src/endpoint.ts",
     "src/client.ts"
   ]
 }
