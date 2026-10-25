@@ -257,12 +257,16 @@ export function registerA2aTools(
           ...(args.kind !== undefined ? { kind: args.kind } : {}),
           preferStream: true,
         })
+        const completed = task.status.state === 'completed'
         return {
-          ok: task.status.state === 'completed',
+          ok: completed,
           state: task.status.state,
           task_id: task.id,
           context_id: task.contextId,
           reply: text,
+          ...(completed
+            ? {}
+            : { detail: `任务未完成，当前状态：${task.status.state}（task_id=${task.id}，可稍后用 a2a_task_status 跟进）` }),
         }
       } catch (error) {
         return { ok: false, ...failure(error) }
@@ -350,7 +354,12 @@ export function registerA2aTools(
       if (blocked !== undefined) return { ok: false, detail: blocked }
       try {
         const task = await clientFor(args.target, args.bearer_token).cancelTask(args.task_id)
-        return { ok: task.status.state === 'canceled', state: task.status.state }
+        const canceled = task.status.state === 'canceled'
+        return {
+          ok: canceled,
+          state: task.status.state,
+          ...(canceled ? {} : { detail: `任务未取消，当前状态：${task.status.state}（task_id=${task.id}）` }),
+        }
       } catch (error) {
         return { ok: false, ...failure(error) }
       }

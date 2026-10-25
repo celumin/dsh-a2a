@@ -303,6 +303,10 @@ test('classifyError：上游不可用可重试', () => {
   assert.deepEqual(classifyError(-32003), { retryable: true })
 })
 
+test('classifyError：传输层/超时（-1）可重试', () => {
+  assert.deepEqual(classifyError(-1), { retryable: true })
+})
+
 test('classifyError：其他码不表态', () => {
   assert.deepEqual(classifyError(-32601), {})
 })

@@ -213,5 +213,7 @@ function messageToTask(raw: unknown, contextId: string): A2aTask {
 export function classifyError(code: number): { retryable?: boolean } {
   if (code === -32005 || code === -32006) return { retryable: false }
   if (code === -32003) return { retryable: true }
+  // -1 是客户端侧统一码：传输错误、超时、重定向、HTTP 状态。这些都可以重试。
+  if (code === -1) return { retryable: true }
   return {}
 }
