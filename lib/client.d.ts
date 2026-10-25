@@ -65,6 +65,12 @@ export declare class A2aClient {
      */
     private messageMetadata;
     private rpcHeaders;
+    /**
+     * 是否允许把 Bearer 发往该端点：卡片端点已经过 `decideEndpoint` 授权
+     * （同源过路径作用域、跨源过 `clientCardEndpointPatterns`）；回退端点则要求
+     * 仍在目标白名单内。
+     */
+    private endpointAuthorized;
     /** 一次调用的总预算：发现 / RPC / 轮询共用同一个 deadline。 */
     private deadline;
     /**

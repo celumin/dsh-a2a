@@ -241,7 +241,7 @@ async function startAgent(card, onRpc) {
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
       const parsed = JSON.parse(body)
-      calls.push({ method: parsed.method, params: parsed.params, version: req.headers['x-a2a-version'], url: req.url })
+      calls.push({ method: parsed.method, params: parsed.params, version: req.headers['x-a2a-version'], url: req.url, authorization: req.headers.authorization })
       onRpc(parsed, res)
     })
   })
@@ -795,6 +795,34 @@ const main = async () => {
   const rpcResult = (req, result) => ({ jsonrpc: '2.0', id: req.id, result })
   const completedV10 = { task: { id: 't1', contextId: 'c1', status: { state: 'TASK_STATE_COMPLETED' }, artifacts: [{ parts: [{ text: 'ok' }] }] } }
   const completedV03 = { kind: 'task', id: 't1', contextId: 'c1', status: { state: 'completed', timestamp: new Date().toISOString() } }
+  await test('A2aClient：白名单放行的跨源端点仍携带 Bearer', async () => {
+    const other = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV10)))
+    })
+    const srv = await startAgent({
+      ...v10Card,
+      supportedInterfaces: [{ url: `${other.origin}/rpc`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+    }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV10)))
+    })
+    try {
+      const crossAllowed = new A2aClient({
+        baseUrl: srv.origin,
+        bearerToken: 'secret',
+        allowPatterns: [`${srv.origin}/`],
+        cardEndpointPatterns: [`${other.origin}/rpc`],
+        timeoutMs: 5000,
+      })
+      await crossAllowed.sendForText('hi')
+      assert.equal(other.calls[0].authorization, 'Bearer secret')
+    } finally {
+      await srv.close()
+      await other.close()
+    }
+  })
+
 
   await test('A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}', async () => {
     const agent = await startAgent(v10Card, (req, res) => {

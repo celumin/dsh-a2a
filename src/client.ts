@@ -109,15 +109,25 @@ export class A2aClient {
     }
   }
 
-  private rpcHeaders(url: string, version: WireVersion, extra?: Record<string, string>): Record<string, string> {
+  private rpcHeaders(version: WireVersion, authorized: boolean, extra?: Record<string, string>): Record<string, string> {
     return {
       'Content-Type': 'application/json',
       'X-A2A-Version': versionHeader(version),
-      ...(this.options.bearerToken !== undefined && matchesAllowlist(this.options.allowPatterns ?? ['*'], url)
+      ...(this.options.bearerToken !== undefined && authorized
         ? { Authorization: `Bearer ${this.options.bearerToken}` }
         : {}),
       ...(extra ?? {}),
     }
+  }
+
+  /**
+   * 是否允许把 Bearer 发往该端点：卡片端点已经过 `decideEndpoint` 授权
+   * （同源过路径作用域、跨源过 `clientCardEndpointPatterns`）；回退端点则要求
+   * 仍在目标白名单内。
+   */
+  private endpointAuthorized(decision: EndpointDecision): boolean {
+    if (decision.source === 'card') return true
+    return matchesAllowlist(this.options.allowPatterns ?? ['*'], decision.url)
   }
 
   /** 一次调用的总预算：发现 / RPC / 轮询共用同一个 deadline。 */
@@ -143,7 +153,7 @@ export class A2aClient {
     try {
       response = await this.fetchFn()(decision.url, {
         method: 'POST',
-        headers: this.rpcHeaders(decision.url, version),
+        headers: this.rpcHeaders(version, this.endpointAuthorized(decision)),
         body,
         redirect: 'manual',
         signal: AbortSignal.timeout(remaining),
@@ -350,7 +360,7 @@ export class A2aClient {
     })
     const response = await this.fetchFn()(decision.url, {
       method: 'POST',
-      headers: this.rpcHeaders(decision.url, version, { Accept: 'text/event-stream' }),
+      headers: this.rpcHeaders(version, this.endpointAuthorized(decision), { Accept: 'text/event-stream' }),
       body,
       redirect: 'manual',
       signal: AbortSignal.timeout(Math.max(deadline - Date.now(), 1)),
