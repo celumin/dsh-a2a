@@ -1,0 +1,217 @@
+/**
+ * A2A 版本协商与响应归一（v1.0 ProtoJSON ↔ v0.3 内部模型）。
+ *
+ * 设计依据：docs/superpowers/specs/2026-10-24-round2.5-protocol-alignment-design.md §3.4–§3.6。
+ * 本模块零依赖，全部为纯函数，便于单测。
+ *
+ * @module dsh-a2a/compat
+ */
+
+import type { A2aMessage, A2aTask, AgentCard, Artifact, Part, TaskState } from './protocol.ts'
+
+/** 线上协议版本（只有大版本差异会改变方法名与报文形状）。 */
+export type WireVersion = 'v1.0' | 'v0.3'
+
+/** 方法表：v1.0 用 PascalCase，v0.3 用 `resource/action`。 */
+export interface MethodTable {
+  readonly send: string
+  readonly stream: string
+  readonly getTask: string
+  readonly cancel: string
+}
+
+const METHODS: Record<WireVersion, MethodTable> = {
+  'v1.0': { send: 'SendMessage', stream: 'SendStreamingMessage', getTask: 'GetTask', cancel: 'CancelTask' },
+  'v0.3': { send: 'message/send', stream: 'message/stream', getTask: 'tasks/get', cancel: 'tasks/cancel' },
+}
+
+export function methodsFor(version: WireVersion): MethodTable {
+  return METHODS[version]
+}
+
+/** 请求头 `X-A2A-Version` 的值：固定"主.次"，不写补丁号。 */
+export function versionHeader(version: WireVersion): '1.0' | '0.3' {
+  return version === 'v1.0' ? '1.0' : '0.3'
+}
+
+/**
+ * 从卡片读版本声明：JSONRPC 接口条目的 `protocolVersion` 优先，其次
+ * `protocolVersions[]` 首个，再次顶层 `protocolVersion`。
+ * 无可用声明（缺失、`2.0`、无法解析）→ undefined。
+ */
+export function versionOf(card: AgentCard): WireVersion | undefined {
+  const interfaces = card.supportedInterfaces ?? []
+  const jsonrpc = interfaces.find(
+    (entry) => String(entry.protocolBinding ?? '').toUpperCase() === 'JSONRPC',
+  )
+  const candidates: Array<string | undefined> = [
+    jsonrpc?.protocolVersion,
+    card.protocolVersions?.[0],
+    card.protocolVersion,
+  ]
+  for (const raw of candidates) {
+    const parsed = parseMajor(raw)
+    if (parsed !== undefined) return parsed
+  }
+  return undefined
+}
+
+/**
+ * 协商结果：卡片缺失或没有可用声明都落到 v0.3（后者是 §3.4.2 的默认版本，
+ * 前者是 §3.4.3 的降级）。两条规则触发条件不同，但结论一致。
+ */
+export function negotiateVersion(card: AgentCard | undefined): WireVersion {
+  if (card === undefined) return 'v0.3'
+  return versionOf(card) ?? 'v0.3'
+}
+
+function parseMajor(raw: string | undefined): WireVersion | undefined {
+  if (typeof raw !== 'string') return undefined
+  const text = raw.trim().replace(/^[vV]/, '')
+  const match = /^(\d+)(?:\.\d+)*$/.exec(text)
+  if (match === null) return undefined
+  const major = Number(match[1])
+  if (major === 1) return 'v1.0'
+  if (major === 0) return 'v0.3'
+  return undefined
+}
+
+// ── 状态映射 ───────────────────────────────────────────────────────────
+
+const INTERNAL_STATES: readonly TaskState[] = [
+  'submitted',
+  'working',
+  'input-required',
+  'completed',
+  'failed',
+  'canceled',
+  'rejected',
+  'auth-required',
+  'unknown',
+]
+
+/**
+ * 状态归一：v1.0 的 `TASK_STATE_*` → 内部小写值；`UNSPECIFIED` 与任何不认识的
+ * 值映射为 `unknown`，并把原值留在 `rawState`（不当作终态）。
+ */
+export function normalizeState(raw: unknown): { state: TaskState; rawState?: string } {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (text === '') return { state: 'unknown', rawState: String(raw) }
+  if ((INTERNAL_STATES as readonly string[]).includes(text)) {
+    return { state: text as TaskState }
+  }
+  if (text.startsWith('TASK_STATE_')) {
+    const suffix = text.slice('TASK_STATE_'.length).toLowerCase().replace(/_/g, '-')
+    if ((INTERNAL_STATES as readonly string[]).includes(suffix) && suffix !== 'unknown') {
+      return { state: suffix as TaskState }
+    }
+  }
+  return { state: 'unknown', rawState: text }
+}
+
+// ── part 判别 ──────────────────────────────────────────────────────────
+
+/**
+ * part 的类型：有 `kind` 用它；v1.0 的 ProtoJSON 没有 `kind`，按成员名判别
+ * （`text` / `data` / `url`|`file`）。
+ */
+export function partKind(part: Record<string, unknown>): 'text' | 'data' | 'file' | undefined {
+  const explicit = part['kind']
+  if (explicit === 'text' || explicit === 'data' || explicit === 'file') return explicit
+  if (typeof part['text'] === 'string') return 'text'
+  if (part['data'] !== undefined) return 'data'
+  if (part['url'] !== undefined || part['file'] !== undefined) return 'file'
+  return undefined
+}
+
+function normalizePart(part: unknown): Part {
+  if (part === null || typeof part !== 'object') return part as Part
+  const record = part as Record<string, unknown>
+  if (typeof record['kind'] === 'string') return part as Part
+  const kind = partKind(record)
+  return (kind === undefined ? part : { ...record, kind }) as Part
+}
+
+// ── 响应归一 ───────────────────────────────────────────────────────────
+
+/** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态与 parts 归一）。 */
+export function normalizeTask(raw: unknown): A2aTask {
+  if (raw === null || typeof raw !== 'object') {
+    throw new Error('invalid A2A task response')
+  }
+  const record = raw as Record<string, unknown>
+  const task = record['task'] !== undefined && typeof record['task'] === 'object'
+    ? (record['task'] as Record<string, unknown>)
+    : record
+  const status = (task['status'] ?? {}) as Record<string, unknown>
+  const normalized = normalizeState(status['state'])
+  const rawArtifacts = task['artifacts']
+  const artifacts: readonly Artifact[] | undefined = Array.isArray(rawArtifacts)
+    ? (rawArtifacts as Array<Record<string, unknown>>).map((artifact) => ({
+      ...artifact,
+      parts: Array.isArray(artifact['parts'])
+        ? (artifact['parts'] as unknown[]).map(normalizePart)
+        : [],
+    })) as unknown as readonly Artifact[]
+    : undefined
+  return {
+    ...(task as unknown as A2aTask),
+    kind: 'task',
+    status: {
+      ...(status as unknown as A2aTask['status']),
+      state: normalized.state,
+      ...(normalized.rawState !== undefined ? { rawState: normalized.rawState } : {}),
+    },
+    ...(artifacts !== undefined ? { artifacts } : {}),
+  }
+}
+
+/** `GetTask` / `CancelTask` 的结果：裸 Task 或 `{ task }`。 */
+export function normalizeTaskResult(raw: unknown): A2aTask {
+  return normalizeTask(raw)
+}
+
+/**
+ * `SendMessage` 的结果：`{ task }` / `{ msg }` / 裸 Task / 裸 Message。
+ * Message 形态包成完结 Task（沿用旧行为），保证上层只处理 Task。
+ */
+export function normalizeSendResult(raw: unknown, contextId: string): A2aTask {
+  if (raw === null || typeof raw !== 'object') {
+    throw new Error('invalid A2A send response')
+  }
+  const record = raw as Record<string, unknown>
+  if (record['task'] !== undefined) return normalizeTask(record)
+  if (record['msg'] !== undefined) return messageToTask(record['msg'], contextId)
+  if (record['status'] !== undefined) return normalizeTask(record)
+  if (record['parts'] !== undefined) return messageToTask(record, contextId)
+  throw new Error('invalid A2A send response: missing task/msg')
+}
+
+function messageToTask(raw: unknown, contextId: string): A2aTask {
+  const message = (raw ?? {}) as A2aMessage & Record<string, unknown>
+  const parts = Array.isArray(message.parts) ? message.parts.map(normalizePart) : []
+  const text = parts
+    .filter((part): part is Part & { text: string } => partKind(part as unknown as Record<string, unknown>) === 'text')
+    .map((part) => part.text)
+    .join('\n')
+    .trim()
+  return {
+    kind: 'task',
+    id: 'inline',
+    contextId,
+    status: { state: 'completed', timestamp: new Date().toISOString() },
+    artifacts: text === '' ? [] : [{ kind: 'artifact', artifactId: 'inline', parts }],
+  }
+}
+
+// ── 错误分类 ───────────────────────────────────────────────────────────
+
+/**
+ * 网关错误码 → 是否鼓励重试。`-32005`（环路）/ `-32006`（注入被拒）不可重试；
+ * `-32003`（上游不可用）可重试；其他不表态（两个字段都省略）。
+ */
+export function classifyError(code: number): { retryable?: boolean } {
+  if (code === -32005 || code === -32006) return { retryable: false }
+  if (code === -32003) return { retryable: true }
+  return {}
+}

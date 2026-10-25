@@ -85,6 +85,10 @@ export type TaskState =
   | 'failed'
   | 'canceled'
   | 'rejected'
+  /** v1.0 的 `TASK_STATE_AUTH_REQUIRED`：等待授权，不是终态。 */
+  | 'auth-required'
+  /** v1.0 的 `TASK_STATE_UNSPECIFIED` 或客户端不认识的枚举：不是终态。 */
+  | 'unknown'
 
 /** 终态集合：再收到任何状态迁移都是协议错误。 */
 export const TERMINAL_STATES: readonly TaskState[] = [
@@ -99,6 +103,8 @@ export interface TaskStatus {
   readonly message?: A2aMessage
   /** RFC 3339 时间戳。 */
   readonly timestamp: string
+  /** 归一时保留的原始状态值（仅 `state === 'unknown'` 时存在）。 */
+  readonly rawState?: string
 }
 
 export interface A2aTask {

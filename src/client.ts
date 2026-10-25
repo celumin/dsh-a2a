@@ -22,6 +22,8 @@ import type {
   TaskEvent,
 } from './protocol.ts'
 
+export { matchesAllowlist } from './endpoint.ts'
+
 export interface A2aClientOptions {
   /** 远端 agent 基地址（Agent Card 所在站点的根，或直接给 JSON-RPC 地址）。 */
   baseUrl: string
@@ -423,54 +425,4 @@ function artifactTextFromEvents(events: TaskEvent[]): string {
     }
   }
   return out.join('\n').trim()
-}
-
-/**
- * 出站白名单模式匹配：
- * - `'*'` 全放开；
- * - URL 形式（`https://a2a.example.com/`、`http://10.0.0.5:7310/`）按
- *   host + port + 路径前缀匹配；hostname 支持 `*.example.com` 通配子域；
- * - `'*:7310'` 任意主机的指定端口。
- */
-export function matchesAllowlist(patterns: readonly string[], target: string): boolean {
-  let url: URL
-  try {
-    url = new URL(target)
-  } catch {
-    return false
-  }
-  const targetFull = `${url.origin}${url.pathname}`.replace(/\/+$/, '')
-  for (const pattern of patterns) {
-    if (pattern === '*') return true
-    // URL 形式：按 host/port/路径前缀精确匹配。
-    let parsed: URL | undefined
-    try {
-      parsed = new URL(pattern)
-    } catch {
-      parsed = undefined
-    }
-    if (parsed !== undefined) {
-      const hostOk = parsed.hostname.startsWith('*.')
-        ? (url.hostname === parsed.hostname.slice(2) || url.hostname.endsWith(`.${parsed.hostname.slice(2)}`))
-        : parsed.hostname === url.hostname
-      const portOk = parsed.port === url.port
-      const pathOk = parsed.pathname === '/' || url.pathname.startsWith(parsed.pathname.replace(/\/+$/, ''))
-      if (hostOk && portOk && pathOk) return true
-      continue
-    }
-    if (pattern.startsWith('*.')) {
-      // *.example.com 允许任意子域（含裸域）。
-      const domain = pattern.slice(2)
-      if (url.hostname === domain || url.hostname.endsWith(`.${domain}`)) return true
-      continue
-    }
-    if (pattern.startsWith('*')) {
-      // *:7310 → 任意主机的指定端口。
-      if (url.port !== '' && pattern === `*:${url.port}`) return true
-      continue
-    }
-    const normalized = pattern.replace(/\/+$/, '')
-    if (url.origin === normalized || targetFull === normalized) return true
-  }
-  return false
 }

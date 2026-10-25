@@ -13,6 +13,17 @@ import {
   decideEndpoint,
   matchesCardEndpointAllowlist,
 } from '../lib/endpoint.js'
+import {
+  versionOf,
+  negotiateVersion,
+  methodsFor,
+  versionHeader,
+  normalizeState,
+  partKind,
+  normalizeSendResult,
+  normalizeTaskResult,
+  classifyError,
+} from '../lib/compat.js'
 
 let passed = 0
 const failures = []
@@ -161,6 +172,139 @@ test('matchesCardEndpointAllowlist：完整 URL 前缀，host/port 精确', () =
   assert.equal(matchesCardEndpointAllowlist(['https://other/rpc'], 'https://other/rpcx'), false)
   assert.equal(matchesCardEndpointAllowlist(['https://other/rpc'], 'https://other:8443/rpc'), false)
   assert.equal(matchesCardEndpointAllowlist(['https://other/rpc'], 'http://other/rpc'), false)
+})
+
+// ── 版本协商与方法表 ───────────────────────────────────────────────────
+
+const cardV03 = { name: 'v03', version: '1.0.0', protocolVersion: '0.3.0', capabilities: {}, skills: [] }
+const cardV10 = {
+  name: 'v10',
+  version: '1.0.0',
+  supportedInterfaces: [{ url: 'http://h:1/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+  capabilities: {},
+  skills: [],
+}
+
+test('versionOf：0.3 声明', () => {
+  assert.equal(versionOf(cardV03), 'v0.3')
+})
+
+test('versionOf：supportedInterfaces 1.0 声明', () => {
+  assert.equal(versionOf(cardV10), 'v1.0')
+})
+
+test('versionOf：无声明 → undefined', () => {
+  assert.equal(versionOf({ name: 'x', version: '1.0.0', capabilities: {}, skills: [] }), undefined)
+})
+
+test('versionOf：未知 major → undefined', () => {
+  assert.equal(versionOf({ ...cardV03, protocolVersion: '2.0' }), undefined)
+})
+
+test('versionOf：单段 1 → v1.0', () => {
+  assert.equal(versionOf({ ...cardV03, protocolVersion: '1' }), 'v1.0')
+})
+
+test('versionOf：多接口时取 JSONRPC 条目，不跨条拼装', () => {
+  const card = {
+    name: 'm', version: '1.0.0', capabilities: {}, skills: [],
+    supportedInterfaces: [
+      { url: 'http://h:1/grpc', protocolBinding: 'GRPC', protocolVersion: '0.3' },
+      { url: 'http://h:1/rpc', protocolBinding: 'JSONRPC', protocolVersion: '1.0' },
+    ],
+  }
+  assert.equal(versionOf(card), 'v1.0')
+})
+
+test('negotiateVersion：卡片缺失 → 降级 v0.3', () => {
+  assert.equal(negotiateVersion(undefined), 'v0.3')
+})
+
+test('negotiateVersion：卡片在但无声明 → 默认 v0.3', () => {
+  assert.equal(negotiateVersion({ name: 'x', version: '1.0.0', capabilities: {}, skills: [] }), 'v0.3')
+})
+
+test('methodsFor：两套方法名', () => {
+  assert.deepEqual(methodsFor('v1.0'), {
+    send: 'SendMessage', stream: 'SendStreamingMessage', getTask: 'GetTask', cancel: 'CancelTask',
+  })
+  assert.deepEqual(methodsFor('v0.3'), {
+    send: 'message/send', stream: 'message/stream', getTask: 'tasks/get', cancel: 'tasks/cancel',
+  })
+})
+
+test('versionHeader：主.次', () => {
+  assert.equal(versionHeader('v1.0'), '1.0')
+  assert.equal(versionHeader('v0.3'), '0.3')
+})
+
+// ── 状态映射与 part 判别 ───────────────────────────────────────────────
+
+test('normalizeState：枚举映射', () => {
+  assert.deepEqual(normalizeState('TASK_STATE_COMPLETED'), { state: 'completed' })
+  assert.deepEqual(normalizeState('TASK_STATE_WORKING'), { state: 'working' })
+  assert.deepEqual(normalizeState('TASK_STATE_INPUT_REQUIRED'), { state: 'input-required' })
+  assert.deepEqual(normalizeState('TASK_STATE_AUTH_REQUIRED'), { state: 'auth-required' })
+})
+
+test('normalizeState：UNSPECIFIED 与未知枚举 → unknown + rawState', () => {
+  assert.deepEqual(normalizeState('TASK_STATE_UNSPECIFIED'), { state: 'unknown', rawState: 'TASK_STATE_UNSPECIFIED' })
+  assert.deepEqual(normalizeState('TASK_STATE_FUTURE_THING'), { state: 'unknown', rawState: 'TASK_STATE_FUTURE_THING' })
+})
+
+test('normalizeState：已是内部值原样返回', () => {
+  assert.deepEqual(normalizeState('completed'), { state: 'completed' })
+  assert.deepEqual(normalizeState('input-required'), { state: 'input-required' })
+})
+
+test('partKind：有 kind 用 kind，无 kind 按成员判别', () => {
+  assert.equal(partKind({ kind: 'text', text: 'x' }), 'text')
+  assert.equal(partKind({ text: 'x' }), 'text')
+  assert.equal(partKind({ data: {} }), 'data')
+  assert.equal(partKind({ url: 'u' }), 'file')
+  assert.equal(partKind({}), undefined)
+})
+
+// ── 响应归一 ───────────────────────────────────────────────────────────
+
+test('normalizeSendResult：{task} 解包', () => {
+  const task = normalizeSendResult({ task: { id: 't1', contextId: 'c1', status: { state: 'TASK_STATE_COMPLETED' } } }, 'cx')
+  assert.equal(task.id, 't1')
+  assert.equal(task.status.state, 'completed')
+})
+
+test('normalizeSendResult：{msg} → 完结任务且文本可提取', () => {
+  const task = normalizeSendResult({ msg: { parts: [{ text: 'hi' }] } }, 'cx')
+  assert.equal(task.status.state, 'completed')
+  assert.equal(task.contextId, 'cx')
+  assert.equal(task.artifacts[0].parts[0].kind, 'text')
+  assert.equal(task.artifacts[0].parts[0].text, 'hi')
+})
+
+test('normalizeSendResult：裸 v0.3 task', () => {
+  const task = normalizeSendResult({ id: 't2', contextId: 'c2', status: { state: 'working' } }, 'cx')
+  assert.equal(task.id, 't2')
+  assert.equal(task.status.state, 'working')
+})
+
+test('normalizeTaskResult：裸 task 与 {task} 都接受', () => {
+  assert.equal(normalizeTaskResult({ id: 'a', contextId: 'c', status: { state: 'completed' } }).id, 'a')
+  assert.equal(normalizeTaskResult({ task: { id: 'b', contextId: 'c', status: { state: 'completed' } } }).id, 'b')
+})
+
+// ── 错误分类 ───────────────────────────────────────────────────────────
+
+test('classifyError：策略拒绝不可重试', () => {
+  assert.deepEqual(classifyError(-32005), { retryable: false })
+  assert.deepEqual(classifyError(-32006), { retryable: false })
+})
+
+test('classifyError：上游不可用可重试', () => {
+  assert.deepEqual(classifyError(-32003), { retryable: true })
+})
+
+test('classifyError：其他码不表态', () => {
+  assert.deepEqual(classifyError(-32601), {})
 })
 
 // ── 汇总 ───────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
     "src/store.ts",
     "src/server.ts",
     "src/endpoint.ts",
+    "src/compat.ts",
     "src/client.ts"
   ]
 }
