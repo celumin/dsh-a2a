@@ -13,7 +13,7 @@ import {
   decideEndpoint,
   matchesCardEndpointAllowlist,
 } from '../lib/endpoint.js'
-import { parseMessageSendParams } from '../lib/protocol.js'
+import { parseMessageSendParams, toV1Task, isV1Method, wireVersionFor } from '../lib/protocol.js'
 import {
   versionOf,
   negotiateVersion,
@@ -356,6 +356,99 @@ test('parseMessageSendParams：v0.3 形状回归不变', () => {
   assert.equal(r.ok, true)
   assert.equal(r.params.message.role, 'user')
   assert.equal(r.params.message.parts[0].kind, 'text')
+})
+
+// ── v1 Task 序列化（Round 2.6 spec §3.4） ─────────────────────────────
+
+function v1Task(state, extraStatus = {}, extraTask = {}) {
+  return {
+    kind: 'task',
+    id: 't1',
+    contextId: 'c1',
+    status: { state, timestamp: '2026-01-01T00:00:00Z', ...extraStatus },
+    ...extraTask,
+  }
+}
+
+test('toV1Task：7 个常规状态映射为 TASK_STATE_*', () => {
+  const want = {
+    submitted: 'TASK_STATE_SUBMITTED',
+    working: 'TASK_STATE_WORKING',
+    'input-required': 'TASK_STATE_INPUT_REQUIRED',
+    completed: 'TASK_STATE_COMPLETED',
+    failed: 'TASK_STATE_FAILED',
+    canceled: 'TASK_STATE_CANCELED',
+    rejected: 'TASK_STATE_REJECTED',
+    'auth-required': 'TASK_STATE_AUTH_REQUIRED',
+  }
+  for (const [state, v1] of Object.entries(want)) {
+    assert.equal(toV1Task(v1Task(state)).status.state, v1, state)
+  }
+})
+
+test('toV1Task：unknown 用合法 rawState，否则 UNSPECIFIED，且 rawState 不上线', () => {
+  const future = toV1Task(v1Task('unknown', { rawState: 'TASK_STATE_FUTURE' }))
+  assert.equal(future.status.state, 'TASK_STATE_FUTURE')
+  assert.equal('rawState' in future.status, false)
+
+  const weird = toV1Task(v1Task('unknown', { rawState: 'weird' }))
+  assert.equal(weird.status.state, 'TASK_STATE_UNSPECIFIED')
+  assert.equal('rawState' in weird.status, false)
+
+  const bare = toV1Task(v1Task('unknown'))
+  assert.equal(bare.status.state, 'TASK_STATE_UNSPECIFIED')
+})
+
+test('toV1Task：task / artifact / message 都去掉 kind', () => {
+  const out = toV1Task(v1Task('completed', {}, {
+    artifacts: [{ kind: 'artifact', artifactId: 'a1', parts: [{ kind: 'text', text: 'hi' }] }],
+    history: [{ kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'q' }], messageId: 'm1' }],
+  }))
+  assert.equal('kind' in out, false)
+  assert.equal('kind' in out.artifacts[0], false)
+  assert.equal('kind' in out.history[0], false)
+  assert.equal(out.artifacts[0].artifactId, 'a1')
+})
+
+test('toV1Task：part 去 kind 转成员形态（text/data/file，file 不带 url）', () => {
+  const out = toV1Task(v1Task('working', {}, {
+    history: [{
+      kind: 'message',
+      role: 'user',
+      messageId: 'm1',
+      parts: [
+        { kind: 'text', text: 'hi' },
+        { kind: 'data', data: { a: 1 } },
+        { kind: 'file', file: { uri: 'file://x', mimeType: 'text/plain', name: 'x.txt' } },
+      ],
+    }],
+  }))
+  const parts = out.history[0].parts
+  assert.deepEqual(parts[0], { text: 'hi' })
+  assert.deepEqual(parts[1], { data: { a: 1 } })
+  assert.deepEqual(parts[2], { file: { uri: 'file://x', mimeType: 'text/plain', name: 'x.txt' } })
+  assert.equal('url' in parts[2].file, false)
+})
+
+test('toV1Task：role 变大写枚举（status.message 与 history）', () => {
+  const out = toV1Task(v1Task('input-required', {
+    message: { kind: 'message', role: 'agent', messageId: 'm2', parts: [{ kind: 'text', text: 'need' }] },
+  }, {
+    history: [{ kind: 'message', role: 'user', messageId: 'm1', parts: [{ kind: 'text', text: 'q' }] }],
+  }))
+  assert.equal(out.status.message.role, 'ROLE_AGENT')
+  assert.equal(out.history[0].role, 'ROLE_USER')
+})
+
+test('isV1Method / wireVersionFor：按方法名决定 wire 版本', () => {
+  for (const m of ['SendMessage', 'GetTask', 'CancelTask']) {
+    assert.equal(isV1Method(m), true, m)
+    assert.equal(wireVersionFor(m), '1.0', m)
+  }
+  for (const m of ['message/send', 'message/stream', 'tasks/get', 'tasks/cancel']) {
+    assert.equal(isV1Method(m), false, m)
+    assert.equal(wireVersionFor(m), '0.3.0', m)
+  }
 })
 
 // ── 汇总 ───────────────────────────────────────────────────────────────

@@ -232,6 +232,19 @@ export declare function parseMessageSendParams(raw: unknown): {
     ok: false;
     error: string;
 };
+/** 请求方法名是否属于 v1.0 别名集合。 */
+export declare function isV1Method(method: string): boolean;
+/**
+ * 该方法名对应的 wire 版本（spec §3.1）：v1 方法 → '1.0'，其余 → '0.3.0'。
+ * 响应头 A2A-Version 用它，与请求头无关（方法名决定形状与版本）。
+ */
+export declare function wireVersionFor(method: string): '1.0' | '0.3.0';
+/**
+ * 把内部 Task 快照序列化成 v1.0 形状（spec §3.4）：去 `kind`、状态用
+ * `TASK_STATE_*`、role 用 `ROLE_*`、part 去 kind、丢弃内部字段 `rawState`。
+ * 只做形状变换，不改 id/contextId/timestamp/artifactId/metadata。
+ */
+export declare function toV1Task(task: A2aTask): Record<string, unknown>;
 /** 提取消息中的全部文本（text part 顺序拼接；无文本 part 返回空串）。 */
 export declare function extractText(parts: readonly Part[]): string;
 /** data/file part 的简要描述（用于日志与诊断，不参与正文）。 */
