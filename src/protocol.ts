@@ -369,6 +369,11 @@ function normalizeRole(raw: unknown): 'user' | 'agent' | undefined {
  */
 function normalizePart(raw: unknown): Part | undefined {
   const part = raw as Record<string, unknown>
+  // part 级 metadata（v1 客户端会带）与 message 级一样原样保留；形态不合法
+  // 就当作没给，绝不因此丢掉 part。
+  const metadata = part.metadata !== null && typeof part.metadata === 'object' && !Array.isArray(part.metadata)
+    ? { metadata: part.metadata as Record<string, unknown> }
+    : {}
   const kind = part.kind ?? (
     typeof part.text === 'string'
       ? 'text'
@@ -379,17 +384,17 @@ function normalizePart(raw: unknown): Part | undefined {
           : undefined
   )
   if (kind === 'text' && typeof part.text === 'string') {
-    return { kind: 'text', text: part.text }
+    return { kind: 'text', text: part.text, ...metadata }
   }
   if (kind === 'data' && part.data !== null && typeof part.data === 'object' && !Array.isArray(part.data)) {
-    return { kind: 'data', data: part.data as Record<string, unknown> }
+    return { kind: 'data', data: part.data as Record<string, unknown>, ...metadata }
   }
   if (
     kind === 'file' && part.file !== null && typeof part.file === 'object'
     && (typeof (part.file as Record<string, unknown>).uri === 'string'
       || typeof (part.file as Record<string, unknown>).bytes === 'string')
   ) {
-    return { kind: 'file', file: part.file as FilePart['file'] }
+    return { kind: 'file', file: part.file as FilePart['file'], ...metadata }
   }
   return undefined
 }

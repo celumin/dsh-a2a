@@ -73,7 +73,7 @@ dsh plugin --profile web add @celumin/dsh-a2a
 dsh plugin --profile <tui|web> add @celumin/dsh-a2a
 
 # 或 GitHub（无 npm 凭据时）
-dsh plugin --profile <tui|web> add github:celumin/dsh-a2a#v0.4.0
+dsh plugin --profile <tui|web> add github:celumin/dsh-a2a#v0.5.0
 
 # 或本地路径
 dsh plugin --profile <tui|web> add file:/path/to/dsh-a2a
@@ -303,12 +303,13 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 ## 六、已知限制
 
-- **出站 message 仍是 v0.3 形状**（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi 与常见实现宽容；**严格 ProtoJSON v1.0 服务端**（要求 `ROLE_USER`、无 `kind`）不在 0.4.0 支持范围。
+- **出站 message 仍是 v0.3 形状**（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi 与常见实现宽容；**严格 ProtoJSON v1.0 服务端**（要求 `ROLE_USER`、无 `kind`）出站不在 0.5.0 支持范围（R8，0.6.0 候选）。
 - **不做 v1.0 流式事件**（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
+- **服务端永远不会产出 `unknown` / `rawState`**：v0.3 内部状态机只有固定枚举，`toV1Task` 的 `TASK_STATE_UNSPECIFIED` / `rawState` 映射是防御性的（只由纯函数单测覆盖）；`auth-required` 是唯一能在真实服务器上出现的非 0.3 枚举状态。
 - **网关 2.6 之前的卡片接口条目恒为 1.0**：旧网关把 `supportedInterfaces[].protocolVersion` 固定写成 `1.0`，把 v0.3 上游挂在它后面会被用 `SendMessage` 调用。a2a-way Round 2.6 起接口版本如实呈现（fleet 内 `feat/round2.6`），旧网关仍是这个问题。
 - 网关的 `POST /a2a/name/{agentName}` 路由没有卡片端点，只能走降级 v0.3。
 - **网关 2.6 之前**的深度闸只识别 `message/send` / `message/stream`，v1.0 的 `SendMessage` 不经过闸；a2a-way Round 2.6 起 `SendMessage` / `SendStreamingMessage` 也过闸（POST 与 GET 载体）。
-- 卡片发现**不做**进程级缓存：每次 `a2a_send` 重新发现（1–2 次 GET）。短 TTL 缓存列为 0.5.0 候选。
+- 卡片发现**不做**进程级缓存：每次 `a2a_send` 重新发现（1–2 次 GET）。短 TTL 缓存列为后续候选。
 
 ---
 

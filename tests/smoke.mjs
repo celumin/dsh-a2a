@@ -1119,6 +1119,40 @@ const main = async () => {
     assert.equal(status, 400)
   })
 
+  await test('Round 2.6：矩阵 #12 auth-required 快照 → TASK_STATE_AUTH_REQUIRED，无 rawState/kind', async () => {
+    // runner 主动停在 auth-required 并挂住，趁 turn 未结束时 GetTask。
+    let releaseAuth
+    let announce
+    const authGate = new Promise((resolve) => { releaseAuth = resolve })
+    const taskIdReady = new Promise((resolve) => { announce = resolve })
+    const authServer = await startServer({
+      runner: {
+        async run({ controller }) {
+          controller.updateStatus('auth-required')
+          announce(controller.taskId)
+          await authGate
+        },
+      },
+    })
+    try {
+      const pending = postJson(authServer.url, {
+        jsonrpc: '2.0', id: 'auth', method: 'SendMessage', params: v1Params('need auth'),
+      }, { 'X-A2A-Version': '1.0' })
+      const taskId = await taskIdReady
+      const got = await postJson(authServer.url, {
+        jsonrpc: '2.0', id: 'get', method: 'GetTask', params: { id: taskId },
+      }, { 'X-A2A-Version': '1.0' })
+      assert.equal(got.result.status.state, 'TASK_STATE_AUTH_REQUIRED')
+      assert.equal('rawState' in got.result.status, false)
+      assert.equal('kind' in got.result, false)
+      releaseAuth()
+      await pending
+    } finally {
+      releaseAuth()
+      await authServer.server.stop()
+    }
+  })
+
   await test('Round 2.6：卡片补发复数 protocolVersions（单数保留）', async () => {
     const response = await fetch(`${base.replace(/\/$/, '')}/.well-known/agent-card.json`)
     assert.equal(response.headers.get('a2a-version'), '0.3.0')

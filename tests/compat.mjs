@@ -351,6 +351,21 @@ test('parseMessageSendParams：判不出形状的 part 仍 -32602', () => {
   assert.match(r.error, /不支持的 part/)
 })
 
+test('parseMessageSendParams：part 级 metadata 原样保留（v1 与 v0.3 两种形态）', () => {
+  const kindless = parseMessageSendParams({ message: { role: 'ROLE_USER', parts: [{ text: 'hi', metadata: { x: 1 } }] } })
+  assert.equal(kindless.ok, true)
+  assert.deepEqual(kindless.params.message.parts[0].metadata, { x: 1 })
+
+  const v03 = parseMessageSendParams({ message: { role: 'user', parts: [{ kind: 'text', text: 'hi', metadata: { y: 2 } }] } })
+  assert.equal(v03.ok, true)
+  assert.deepEqual(v03.params.message.parts[0].metadata, { y: 2 })
+
+  // 非对象 metadata 不塞进内部模型（形态非法不等于丢弃整个 part）。
+  const bad = parseMessageSendParams({ message: { role: 'user', parts: [{ kind: 'text', text: 'hi', metadata: 'nope' }] } })
+  assert.equal(bad.ok, true)
+  assert.equal('metadata' in bad.params.message.parts[0], false)
+})
+
 test('parseMessageSendParams：v0.3 形状回归不变', () => {
   const r = parseMessageSendParams({ message: { role: 'user', parts: [{ kind: 'text', text: 'hi' }] } })
   assert.equal(r.ok, true)
