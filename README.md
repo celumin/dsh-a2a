@@ -1,4 +1,4 @@
-# dsh-a2a（@celumin fork）0.4.0
+# dsh-a2a（@celumin fork）0.5.0
 
 DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件：既把 DSH agent 暴露为标准 A2A 服务器，也让任意 DSH agent 通过 `a2a_*` 工具呼叫远端 A2A agent。
 
@@ -274,27 +274,55 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 ---
 
-## 五、已知限制
+## 五、服务端：v1.0 兼容（0.5.0 新增）
+
+服务端现在同时接受 **v1.0 与 v0.3 两种入站形状**，响应形状按**请求方法名**决定；出站客户端行为不变（仍是 v0.3 形状，见 §六第一条）。
+
+**方法别名**（未知方法仍 `-32601`）：
+
+| v1.0 方法 | 等价 v0.3 方法 | `result` 形状 |
+|---|---|---|
+| `SendMessage` | `message/send` | `{task: <v1 Task>}` |
+| `GetTask` | `tasks/get` | 裸 v1 Task |
+| `CancelTask` | `tasks/cancel` | 裸 v1 Task |
+| `message/send` / `tasks/get` / `tasks/cancel` | — | 裸 v0.3 Task（不变） |
+
+**入站双形状（所有入口，不只别名）**：`role` 接受 `ROLE_USER`/`ROLE_AGENT`（归一成 `user`/`agent`）与原来的小写值；part 缺 `kind` 时按成员判别（`text:string` / `data:object` / `file:{uri|bytes}`），判不出仍是 `-32602`（文案不变）。`message.metadata` 原样透传。
+
+**v1 Task 形状**：状态用 `TASK_STATE_*`（含 `AUTH_REQUIRED` / `UNSPECIFIED`；`unknown` 的合法 `rawState` 原样输出）、part 去 `kind`、role 用 `ROLE_*`、丢弃内部字段 `rawState`；file part 输出 `{file:{uri|bytes,mimeType,name}}`，**不产生 `url`**。
+
+**响应头 `A2A-Version` 跟随方法**：v1.0 名字（含只回 `-32601` 的 `SendStreamingMessage`）→ `1.0`，其余 → `0.3.0`；卡片 GET、`/admin/*`、404 仍固定 `0.3.0`。请求头 `X-A2A-Version` 主版本接受 `0` 与 `1`（其他仍 HTTP 400），`X-A2A-Version` 优先于 `A2A-Version`。
+
+**卡片**：单数 `protocolVersion: "0.3.0"` 保留，新增复数 `protocolVersions: ["0.3.0"]`；**不宣告 1.0**（服务端能力不完整，不 overclaim）。
+
+**不做**：`SendStreamingMessage` / v1 SSE 帧（`{statusUpdate}` / `{artifactUpdate}`）→ 仍 `-32601`；`message/stream` 的事件形状不变；`ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` 不做别名。
+
+**与出站 R8 的关系**：0.5.0 的 v1.0 入口（非流式）是一个**严格 v1.0 验收对象**，可用于 0.6.0 出站报文按版本切换（R8，见 `docs/requirements.md`）的 RED→GREEN：起本服务端，按 `SendMessage` 发 `ROLE_USER` + 无 `kind` 的 part，让 0.4.0 客户端指向它。
+
+---
+
+## 六、已知限制
 
 - **出站 message 仍是 v0.3 形状**（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi 与常见实现宽容；**严格 ProtoJSON v1.0 服务端**（要求 `ROLE_USER`、无 `kind`）不在 0.4.0 支持范围。
 - **不做 v1.0 流式事件**（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
-- **经网关注册的卡片接口条目恒为 1.0**：网关把 `supportedInterfaces[].protocolVersion` 固定写成 `1.0`，但顶层 `protocolVersions` 保留注册方声明。客户端按接口条目优先，所以经网关一律按 v1.0 调用；把 v0.3 上游挂在网关后面会被用 `SendMessage` 调用（网关侧问题，本轮不修）。
+- **网关 2.6 之前的卡片接口条目恒为 1.0**：旧网关把 `supportedInterfaces[].protocolVersion` 固定写成 `1.0`，把 v0.3 上游挂在它后面会被用 `SendMessage` 调用。a2a-way Round 2.6 起接口版本如实呈现（fleet 内 `feat/round2.6`），旧网关仍是这个问题。
 - 网关的 `POST /a2a/name/{agentName}` 路由没有卡片端点，只能走降级 v0.3。
-- 网关的深度闸目前只识别 `message/send` / `message/stream`；v1.0 的 `SendMessage` 不经过深度闸（网关侧问题，客户端无法弥补）。
+- **网关 2.6 之前**的深度闸只识别 `message/send` / `message/stream`，v1.0 的 `SendMessage` 不经过闸；a2a-way Round 2.6 起 `SendMessage` / `SendStreamingMessage` 也过闸（POST 与 GET 载体）。
 - 卡片发现**不做**进程级缓存：每次 `a2a_send` 重新发现（1–2 次 GET）。短 TTL 缓存列为 0.5.0 候选。
 
 ---
 
-## 六、升级（0.3.x → 0.4.0）
+## 七、升级（0.3.x → 0.5.0）
 
 - 直接换版本即可；配置 schema 向后兼容，新增 `clientCardEndpointPatterns`（默认 `[]`，不配置时行为不变）。
 - 行为变化（有意为之）：跨源卡片端点现在默认被忽略并回退；同源端点受 `clientAllowPatterns` 路径约束；`-32601` 不再静默换名重发；超时抛结构化错误。
 - 仍在使用 `a2a.json` 的旧配置请改到 `cordis.patch.yml`。
+- **0.4.0 → 0.5.0**：客户端行为不变；服务端新增 v1.0 入站与方法别名（§五），旧 v0.3 客户端无感。
 - 回退到 0.3.x：`dsh plugin --profile <name> add @celumin/dsh-a2a@0.3.1`。
 
 ---
 
-## 七、开发
+## 八、开发
 
 ```bash
 pnpm verify       # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
@@ -337,7 +365,7 @@ client/
 
 ---
 
-## 八、mDNS 发现（建议，未来版本）
+## 九、mDNS 发现（建议，未来版本）
 
 - **发现目标**：网关优先，P2P 降级。同时发现网关和目标 agent 时，默认经网关转发。
 - **P2P 降级条件**：网关不可达，或显式配置 `MDNS_P2P_ONLY=true`。P2P 不经过网关审计，日志与 UI 必须标明。
@@ -347,7 +375,7 @@ client/
 
 ---
 
-## 九、与 DSH 内置能力的关系
+## 十、与 DSH 内置能力的关系
 
 | 需求 | 用什么 |
 |---|---|
@@ -357,11 +385,12 @@ client/
 
 ---
 
-## 十、版本与 fork
+## 十一、版本与 fork
 
 - **上游**：`https://github.com/zyfgood/dsh-a2a`（fork 点见 `git log` 的初始提交）。
 - **本 fork**：`https://github.com/celumin/dsh-a2a`，npm `@celumin/dsh-a2a`。
 - **0.4.0 改动**：R1（URL 规范化 + method 协商 + v1.0 响应适配）、R5（错误码可见）、R4/R6（配置与名字一致性文档）、端点授权；详见 `docs/requirements.md`。
+- **0.5.0 改动**：服务端 v1.0 兼容（方法别名、入站双形状、按方法返回形状与版本头、卡片复数）；R8（出站按版本切换形状）仍押后到 0.6.0。
 - **升级策略**：自维护线按需发布；上游若修复同类问题，优先评估切回上游。
 
 ## License
