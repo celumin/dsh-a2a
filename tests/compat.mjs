@@ -13,6 +13,7 @@ import {
   decideEndpoint,
   matchesCardEndpointAllowlist,
 } from '../lib/endpoint.js'
+import { parseMessageSendParams } from '../lib/protocol.js'
 import {
   versionOf,
   negotiateVersion,
@@ -309,6 +310,52 @@ test('classifyError：传输层/超时（-1）可重试', () => {
 
 test('classifyError：其他码不表态', () => {
   assert.deepEqual(classifyError(-32601), {})
+})
+
+// ── 入站双形状（Round 2.6 spec §3.3） ────────────────────────────────
+
+test('parseMessageSendParams：ROLE_USER + 无 kind 的 text part', () => {
+  const r = parseMessageSendParams({ message: { role: 'ROLE_USER', parts: [{ text: 'hi' }] } })
+  assert.equal(r.ok, true)
+  assert.equal(r.params.message.role, 'user')
+  assert.equal(r.params.message.parts[0].kind, 'text')
+  assert.equal(r.params.message.parts[0].text, 'hi')
+})
+
+test('parseMessageSendParams：ROLE_AGENT → agent', () => {
+  const r = parseMessageSendParams({ message: { role: 'ROLE_AGENT', parts: [{ text: 'hi' }] } })
+  assert.equal(r.ok, true)
+  assert.equal(r.params.message.role, 'agent')
+})
+
+test('parseMessageSendParams：无 kind 的 data / file part 按成员判别', () => {
+  const data = parseMessageSendParams({ message: { role: 'ROLE_USER', parts: [{ data: { a: 1 } }] } })
+  assert.equal(data.ok, true)
+  assert.equal(data.params.message.parts[0].kind, 'data')
+  assert.deepEqual(data.params.message.parts[0].data, { a: 1 })
+
+  const file = parseMessageSendParams({ message: { role: 'ROLE_USER', parts: [{ file: { uri: 'x' } }] } })
+  assert.equal(file.ok, true)
+  assert.equal(file.params.message.parts[0].kind, 'file')
+  assert.equal(file.params.message.parts[0].file.uri, 'x')
+})
+
+test('parseMessageSendParams：未知 ROLE_* 仍拒绝', () => {
+  const r = parseMessageSendParams({ message: { role: 'ROLE_BOT', parts: [{ text: 'hi' }] } })
+  assert.equal(r.ok, false)
+})
+
+test('parseMessageSendParams：判不出形状的 part 仍 -32602', () => {
+  const r = parseMessageSendParams({ message: { role: 'ROLE_USER', parts: [{}] } })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /不支持的 part/)
+})
+
+test('parseMessageSendParams：v0.3 形状回归不变', () => {
+  const r = parseMessageSendParams({ message: { role: 'user', parts: [{ kind: 'text', text: 'hi' }] } })
+  assert.equal(r.ok, true)
+  assert.equal(r.params.message.role, 'user')
+  assert.equal(r.params.message.parts[0].kind, 'text')
 })
 
 // ── 汇总 ───────────────────────────────────────────────────────────────
