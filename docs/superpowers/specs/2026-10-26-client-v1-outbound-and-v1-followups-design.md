@@ -6,6 +6,7 @@
 > 需求来源：`docs/requirements.md` R8（0.6.0 候选）；0.5.0 分支终审的 deferred minors
 > 关联：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（0.5.0，已发布）、`docs/debug/A2A_pi_agent_communication.md`（真实 v1.0 wire 抓包）
 > 证据基线：`@celumin/dsh-a2a@0.5.0` 已发布 = tag `v0.5.0` @ `e1a1b18`（npm dist-tag `latest`）；本轮改动起点 `cd82893`。
+> 评审报告：`docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（4×P1 / 6×P2，v3 逐条吸收或裁定）。
 
 ## 1. 背景
 
