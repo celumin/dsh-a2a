@@ -77,7 +77,9 @@ const message: A2aMessage = {
 
 - 方法名、`X-A2A-Version` 头、`{id}` 参数（`getTask`/`cancelTask`）**都不改**——0.4.0 已按版本选好。
 - `sendStream` 仍只在 v0.3 被自动选中（`src/client.ts:452`）；直接调用时也按版本序列化。
-- **新增显式守卫**：协商到 v1.0 时 `sendStream` 在发请求**之前**抛 `A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`。理由：对真实 v1.0 服务端，`SendStreamingMessage` 会成功并回 `{statusUpdate}`/`{artifactUpdate}` 帧，而现有解析器只认 `event.kind`（v0.3 帧），结果是**默默返回空事件数组**——比明确报错更糟。对 0.5.0 服务端两者都是 `-32601`，语义一致。
+- **新增显式守卫**：协商到 v1.0 时 `sendStream` 在发请求**之前**抛 `A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`。
+  - **不抛会怎样**（这是选它的理由，不是补充说明）：真实 v1.0 服务端会**成功**接受 `SendStreamingMessage` 并回 `{statusUpdate}` / `{artifactUpdate}` 帧；现有解析器只认 v0.3 的 `event.kind`，会把这些帧全部跳过 → **不报错、返回空事件数组**。调用方看到"流结束了但什么都没发生"，既拿不到错误码也拿不到事件，比一个明确的 `-32601` 难排查得多。所以宁可提前失败，也不做"宽容地返回空数组"。
+  - 对 0.5.0 服务端两种做法都是 `-32601`，语义一致；`sendForText` 的自动选路不变（v1 从不选流式）。
 
 ### 3.3 v1 方法名单一真值（M1 + M2）
 
@@ -91,13 +93,23 @@ export const V1_METHOD_NAMES: readonly string[] = [
   'CreateTaskPushNotificationConfig', 'GetTaskPushNotificationConfig',
   'ListTaskPushNotificationConfigs', 'DeleteTaskPushNotificationConfig',
 ]
-/** 其中真正有别名分发的三个（push 配置族走 -32003，不是别名）。 */
+/**
+ * 其中真正有**别名分发**的三个。push 配置族 4 个名字**不在**这个集合：
+ * 它们只借 v1 名字的响应头，处理仍走 pushConfig 分支（-32003）。
+ */
 export const V1_ALIASES: ReadonlySet<string> = new Set(['SendMessage', 'GetTask', 'CancelTask'])
 export function isV1Method(method: string): boolean  // V1_ALIASES
 export function wireVersionFor(method: string): '1.0' | '0.3.0'  // V1_METHOD_NAMES
 ```
 
-push-notification-config 家族在 `dispatch` 里与 v0.3 的两个等价名**共用同一个分支**：返回 `-32003` + `'本 A2A 服务器不支持推送通知'`，只是响应头是 `1.0`（v1 名字）。这既修了 M1 对这 4 个真名字的洞，又不引入新能力。
+push-notification-config 家族在 `dispatch` 里与 v0.3 的两个等价名**共用同一个分支**：返回 `-32003` + `'本 A2A 服务器不支持推送通知'`，只是响应头是 `1.0`（v1 名字）。
+
+**必须区分两个集合**（这是最容易做错的一处）：
+
+- `V1_METHOD_NAMES` 只回答"响应头是 1.0 还是 0.3.0"；
+- `V1_ALIASES` 才回答"有没有别名分发"。`isV1Method` 只对 `V1_ALIASES` 为 `true`。
+
+所以 4 个 push 配置名字：**在** `V1_METHOD_NAMES`、**不在** `V1_ALIASES`、`isV1Method === false`、handler 是 `pushConfig`（返回 `-32003`），**不得**给它们加 `SendMessage` 式的别名分发——"实现推送通知"是 spec 的非目标。把它们加进 `V1_ALIASES` 会同时把 `-32003` 变成真实实现或 `-32601`，两种都错。
 
 `src/server.ts` 的 `dispatch` 改为**表**，不再有第三份字面量：
 
@@ -192,6 +204,14 @@ private static readonly RPC_ROUTES: Record<string, { handler: 'send' | 'getTask'
 - **`sendStream` 在 v1.0 上改为立即报错**：直接调用公开 API 的用户从"静默空数组/对端错误"变为结构化 `-32601`；`sendForText` 的自动选路不变（v1 从不选流式）。
 - **M5 放宽空头**：空头从 400 变 200 —— 只影响畸形请求，不掩盖真实版本冲突（`2.0` 仍 400）。
 
-## 7. 工量
+## 7. 执行者裁定（builder-check 后由实现方拍板，需人确认）
+
+| # | 问题 | 裁定 | 理由 / 反事实 |
+|---|---|---|---|
+| 1 | push-notification-config 家族算不算 v1 名字？ | **算** `V1_METHOD_NAMES`（11 个之一），**不属于** `V1_ALIASES`；走 `pushConfig` 分支返回 `-32003`，头 `1.0` | 它们是真 v1 名字，不纳入则 M1 对这 4 个仍留 `0.3.0`。但"算 v1 名字"只控制响应头；给它们加别名分发等于实现推送通知（非目标），所以 `isV1Method` 必须为 `false`。 |
+| 2 | `X:""` + `A:2.0` / `A:""` | 空 X 等于没带 → 回落 A；`A:2.0` → 400；`A:""` → 200 + `0.3.0` | "先挑值、再校验"是唯一能同时满足"空头等价没带"和"X 优先"的读法；空 X 压制 A 会让 `2.0` 静默通过。 |
+| 3 | 真实 v1 服务端上的 `sendStream` | 发请求前抛 `-32601` | 不抛则 v1 帧（`{statusUpdate}`/`{artifactUpdate}`）被只认 `event.kind` 的解析器全部跳过 → 静默空数组：调用方既无错误也无事件。明确失败优于静默成功。 |
+
+## 8. 工量
 
 约 **1.2 人天**：R8 纯函数 + client 接线 0.3；strict fixture 与字节断言 0.4；M1/M2 0.15；M3/M5 0.2；文档与发布准备 0.15。

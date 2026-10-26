@@ -186,6 +186,7 @@ const message: A2aMessage = {
 - `send`：`this.rpc<unknown>(methodsFor(version).send, { message: wireMessageFor(version, message) }, deadline)`
 - `sendStream`：`JSON.stringify({ jsonrpc:'2.0', id, method: methodsFor(version).stream, params: { message: wireMessageFor(version, message) } })`
 - `sendStream` 在算出 `version` 后、发请求前：`if (version === 'v1.0') throw new A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`
+  - **不要"宽容化"这个守卫**：真实 v1 服务端会成功回 v1 帧（`{statusUpdate}`/`{artifactUpdate}`），而解析器只认 v0.3 的 `event.kind`，会把它们全跳过 → 静默返回空事件数组（既无错误也无事件）。明确 `-32601` 是 spec §3.2 选的失败方式，不是临时限制。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -370,6 +371,8 @@ Expected: compat FAIL（`V1_METHOD_NAMES` 未导出）；smoke 第一条 FAIL（
 `protocol.ts`：`V1_METHOD_NAMES`（11 个，见 spec §3.3）+ `V1_ALIASES`（三个）替换旧常量；`wireVersionFor` 用 `includes`。
 
 `server.ts`：`dispatch` 先查静态 `RPC_ROUTES`（6 个 v0.3/v1 别名 + 6 个 push 配置名字，其中 v0.3 两个 push 名字也在表里），按 `handler` 分发；`pushConfig` 分支返回 `jsonrpcError(..., A2A_ERRORS.PUSH_NOTIFICATION_NOT_SUPPORTED, '本 A2A 服务器不支持推送通知')`；`agent/authenticatedExtendedCard`、`tasks/resubscribe`、default `-32601` 保持原分支。
+
+**两个集合不要混**：`V1_METHOD_NAMES`（11 个）只决定响应头；`V1_ALIASES`（3 个）才决定有没有别名分发。4 个 push 配置名字在 `V1_METHOD_NAMES`、不在 `V1_ALIASES`、`isV1Method === false`、handler 必须是 `pushConfig`。**不要**给它们加 `SendMessage` 式分发（= 实现推送通知，非目标）；把 `-32003` 改成 `-32601` 或改成真实实现都是错的。
 
 - [ ] **Step 4: 跑测试确认通过**
 
