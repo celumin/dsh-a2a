@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 出站 message 形状跟随协商版本（v1.0 → ProtoJSON 形状，v0.3 逐字节不变），并用严格验收对象证明；同时修掉 0.5.0 终审遗留的 M1–M5。
+**Goal:** 出站 message 形状跟随协商版本（v1.0 → ProtoJSON 形状，v0.3 逐字节不变），并用严格验收对象证明；同时修掉 0.5.0 终审遗留与 spec review 越界项（M1–M7）。
 
 **Architecture:** 版本适配仍是纯函数：`compat.ts` 新增 `wireMessageFor(version, message)`，`client.ts` 的 `send`/`sendStream` 两处字面量改为调用它，`sendStream` 在 v1.0 上提前报错。服务端做三处收敛：v1 方法名真值收敛为 `protocol.ts` 的 `V1_METHOD_NAMES`/`V1_ALIASES` + `server.ts` 的**导出**路由表（含 push-notification-config 家族）；版本门抽成纯函数 `checkVersionHeader(x, a)`；`toV1Task` 加运行期兜底。strict v1 验收对象是**测试内联 proxy**（校验 v1 形状后才转发给真实 0.5.0 服务端），不进生产代码。
 
@@ -20,6 +20,8 @@
 - `sendStream` 在协商到 v1.0 时抛 **`A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`**——码值必须是 `-32601`（`-1` 会被 `classifyError` 标成可重试）。
 - `toV1Task` 对合法输入的输出逐字段不变（0.5.0 已发布行为不回退）；§3.4 列出的全部结构性非法输入不抛、不产生 `null`/缺 `state`。
 - 每次 `tsc` 重建的 `lib/` 与 `src/` 一起提交（仓库跟踪构建产物）。
+- **M6**：v1 响应的 `status.message` / `history[]` 归一成内部形状（role 小写、part 带 `kind`、message 带 `kind:'message'`），v0.3 输入幂等；未知 role 原样保留。
+- **M7**：`classifyError(code, method?)` 对 push 配置方法的 `-32003` 返回 `{retryable:false}`，其余 `-32003` 保持 `{retryable:true}`；`A2aRpcError` 携带 `method`。
 - 版本 `0.6.0`；**不执行 npm publish**（人的决定）；R8 在真实 Pi/Hermes 联调前**不标"已完成"**。
 
 ## Review Focus
@@ -29,6 +31,7 @@
 3. 切形状时不顺带丢字段：`messageId` / `contextId` / `taskId` / `metadata` 在 v1 与 v0.3 两版都随行。
 4. `toV1Task` 是公开导出：`state:'bogus'`、缺 `status`、`status:null`、`history:'x'`、`artifacts:[{}]`、未知 `kind`、缺 `kind`、非对象 part 都不抛、不产 `null`、status 一定有 `state`。
 5. v1 方法名真值不漂移：`V1_ALIASES`、导出的 `RPC_ROUTES`、`wireVersionFor` 三者一致；未实现/不支持的 v1 名字 `-32601` / `-32003` 时头都是 `1.0`，v0.3 名字仍是 `0.3.0`；`sendStream` 的错误码是 `-32601`。
+6. v1 响应的 message 归一：`history[]` 与 `status.message` 的 role/part 是内部形状，v0.3 响应逐字段不变（幂等）；`-32003` 在 push 配置方法上不可重试、在其它方法上仍是"上游不可用可重试"。
 
 ---
 
@@ -550,7 +553,133 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 
 ---
 
-### Task 6: 文档、版本与发布准备
+### Task 6: v1 响应 message 归一 + `-32003` 消歧（M6/M7）
+
+**Files:**
+- Modify: `src/compat.ts`（`normalizeMessage` + `normalizeTask` 应用；`classifyError` 加 `method` 参数）
+- Modify: `src/protocol.ts`（新增 `PUSH_CONFIG_METHOD_NAMES` + `isPushConfigMethod`）
+- Modify: `src/client.ts`（`A2aRpcError` 第 4 个可选参 `method`；`rpc()` 与 `sendStream` 的 JSON-RPC 错误带上方法名）
+- Modify: `src/tools.ts`（`failure()` 传 `error.method`；`retryable` 描述补一句）
+- Test: `tests/compat.mjs`、`tests/smoke.mjs`
+
+**Interfaces:**
+- Produces: `export function classifyError(code: number, method?: string): { retryable?: boolean }`
+- Produces: `class A2aRpcError { constructor(code: number, message: string, data?: unknown, method?: string) }`
+- Produces: `export const PUSH_CONFIG_METHOD_NAMES: readonly string[]`、`export function isPushConfigMethod(method: string | undefined): boolean`
+- Consumes: `V1_METHOD_NAMES`（Task 4）、`normalizePart`（已有）
+
+- [ ] **Step 1: 写失败测试**
+
+`tests/compat.mjs`：
+
+```js
+test('normalizeTaskResult：v1 message 归一（role/kind/parts），v0.3 幂等', () => {
+  const v1 = normalizeTaskResult({
+    id: 't1', contextId: 'c1',
+    status: {
+      state: 'TASK_STATE_INPUT_REQUIRED', timestamp: '2026-01-01T00:00:00Z',
+      message: { role: 'ROLE_AGENT', parts: [{ text: 'need' }], messageId: 'm0' },
+    },
+    history: [{ role: 'ROLE_USER', parts: [{ text: 'q' }], messageId: 'm1' }],
+  })
+  assert.equal(v1.status.message.role, 'agent')
+  assert.equal(v1.status.message.kind, 'message')
+  assert.deepEqual(v1.status.message.parts, [{ kind: 'text', text: 'need' }])
+  assert.equal(v1.history[0].role, 'user')
+  assert.equal(v1.history[0].kind, 'message')
+  assert.equal(v1.history[0].parts[0].kind, 'text')
+
+  const v03 = normalizeTaskResult({
+    kind: 'task', id: 't2', contextId: 'c2',
+    status: { state: 'completed', timestamp: '2026-01-01T00:00:00Z' },
+    history: [{ kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'q' }], messageId: 'm' }],
+  })
+  assert.deepEqual(v03.history[0], {
+    kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'q' }], messageId: 'm',
+  })
+})
+
+test('classifyError：-32003 按方法消歧（push 配置不可重试）', () => {
+  assert.deepEqual(classifyError(-32003), { retryable: true })
+  assert.deepEqual(classifyError(-32003, 'message/send'), { retryable: true })
+  assert.deepEqual(classifyError(-32003, 'CreateTaskPushNotificationConfig'), { retryable: false })
+  assert.deepEqual(classifyError(-32003, 'tasks/pushNotificationConfig/set'), { retryable: false })
+  assert.deepEqual(classifyError(-32005, 'CreateTaskPushNotificationConfig'), { retryable: false })
+})
+```
+
+`tests/smoke.mjs`（Round 2.6 块）：
+
+```js
+await test('Round 2.6：v1 响应 history/status.message 归一成内部形状', async () => {
+  const strict = await startStrictV1(rpc)
+  try {
+    const client = new A2aClient({ baseUrl: strict.origin, timeoutMs: 5000 })
+    const { task } = await client.sendForText('NEED_INPUT')
+    assert.equal(task.status.state, 'input-required')
+    assert.equal(task.status.message.role, 'agent')
+    assert.equal(task.status.message.kind, 'message')
+    assert.equal(task.status.message.parts[0].kind, 'text')
+    assert.equal(task.history[0].role, 'user')
+    assert.equal(task.history[0].kind, 'message')
+    assert.equal(task.history[0].parts[0].kind, 'text')
+  } finally {
+    await strict.close()
+  }
+})
+
+await test('Round 2.6：JSON-RPC 错误对象携带方法名', async () => {
+  const agent = await startAgent(v10Card, (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32003, message: 'push not supported' } }))
+  })
+  try {
+    const c = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+    await assert.rejects(
+      () => c.sendForText('x'),
+      (e) => e.code === -32003 && e.method === 'SendMessage',
+    )
+  } finally {
+    await agent.close()
+  }
+})
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `npm test`
+Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `undefined`；`classifyError(-32003, push)` 仍 `true`）；smoke 两条 FAIL（`status.message.role === 'ROLE_AGENT'`、`err.method === undefined`）
+
+- [ ] **Step 3: 实现**
+
+`protocol.ts`：`PUSH_CONFIG_METHOD_NAMES`（8 个：v0.3 的 set/get/list/delete + v1 的 4 个名字）+ `isPushConfigMethod(method)`；`compat.ts` 的 `classifyError` 从 protocol 引入该函数（protocol 不 import compat，无环）。
+
+`compat.ts`：新增内部 `normalizeMessage(raw)`：
+- 非对象 → `undefined`；
+- `role`：`ROLE_USER`/`user` → `user`、`ROLE_AGENT`/`agent` → `agent`、其它原样（cast 保留）；
+- `parts`：`Array.isArray ? map(normalizePart).filter(非对象丢弃) : []`；
+- 返回 `{ ...raw, kind: 'message', role, parts }`。
+`normalizeTask`：`status.message` 存在 → 用 `normalizeMessage` 归一（`undefined` 则删掉该键）；`history` 数组 → `map(normalizeMessage).filter(Boolean)`；`history` 非数组 → 保持现状。
+
+`client.ts`：`A2aRpcError` 构造器加第 4 个可选参 `method`；`rpc()` 里两处 JSON-RPC 错误抛出（`rpcError !== undefined`）带 `method`；`sendStream` 两处 JSON-RPC 错误带 `methodsFor(version).stream`。
+
+`tools.ts`：`failure(error)` 用 `classifyError(error.code, error.method)`；`retryable` 描述改成「是否鼓励重试：`-32005`/`-32006` 为 false；`-32003` 对 push 配置方法为 false，其余为 true」。
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: `npm test`
+Expected: PASS（smoke 79 + compat 59）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add src/compat.ts src/protocol.ts src/client.ts src/tools.ts tests/compat.mjs tests/smoke.mjs lib
+git commit -m "fix(compat): normalize v1 response messages and disambiguate -32003 by method"
+```
+
+---
+
+### Task 7: 文档、版本与发布准备
 
 **Files:**
 - Modify: `README.md`（§四 新增"出站报文随版本切换"；§五 服务端小节补 v1 名字响应头；`README:279`、`:300` 的旧断言；§六 已知限制第 1 条 + metadata 一句）
@@ -570,7 +699,7 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 
 - 基线行（`:6`）：`@celumin/dsh-a2a@0.6.0`（npm 已发布）/ 下一个交付 `0.7.0`（待定）；
 - R8 状态：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）`——**不要**写"已完成"；
-- R8 追加 `- **验收证据**：`（strict proxy 用例名、capture 断言、`npm test` 计数）与 `- **0.5.0 遗留修复（随 0.6.0）**：M1–M5`；
+- R8 追加 `- **验收证据**：`（strict proxy 用例名、capture 断言、`npm test` 计数）与 `- **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）`；
 - `:193` 映射行同步；
 - 0.5.0 spec §3.1 表头下加取代注记（见设计 spec §3.7）。
 
@@ -581,7 +710,7 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 - [ ] **Step 4: 全量验证**
 
 Run: `npm test && npm run verify`
-Expected: smoke 77 + compat 57、verify 通过。
+Expected: smoke 79 + compat 59、verify 通过。
 
 - [ ] **Step 5: 提交**
 

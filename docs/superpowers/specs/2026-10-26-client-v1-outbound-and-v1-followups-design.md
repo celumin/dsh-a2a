@@ -1,18 +1,18 @@
 # dsh-a2a 0.6.0 设计：出站报文按版本切换（R8）+ 0.5.0 遗留修复
 
-> 状态：定稿 v3（spec review 吸收后修订）
-> 日期：2026-10-26（v3：2026-10-27）
+> 状态：定稿 v4（spec review 吸收 + 人拍板越界项后修订）
+> 日期：2026-10-26（v4：2026-10-27）
 > 范围：dsh-a2a 0.6.0
 > 需求来源：`docs/requirements.md` R8（0.6.0 候选）；0.5.0 分支终审的 deferred minors
 > 关联：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（0.5.0，已发布）、`docs/debug/A2A_pi_agent_communication.md`（真实 v1.0 wire 抓包）
 > 证据基线：`@celumin/dsh-a2a@0.5.0` 已发布 = tag `v0.5.0` @ `e1a1b18`（npm dist-tag `latest`）；本轮改动起点 `cd82893`。
-> 评审报告：`docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（4×P1 / 6×P2，v3 逐条吸收或裁定）。
+> 评审报告：`docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（4×P1 / 6×P2；v3 逐条吸收，v4 再吸收评审的两条越界发现 M6/M7）。
 
 ## 1. 背景
 
 **R8（主需求）**：0.4.0/0.5.0 的出站 `message/send` / `SendMessage` 请求体**恒为 v0.3 形状**——`role:"user"`、`kind:"message"`、`parts[].kind`。Pi / Hermes 宽容，严格 ProtoJSON v1.0 服务端会以 `-32602` 拒绝；0.4.0 时没有严格验收对象，所以一直押后。0.5.0 已发布（tag `v0.5.0` @ `e1a1b18`），服务端 v1.0 入口（`SendMessage` + `ROLE_USER` + 无 `kind` 的 part）可当**严格 fixture**，前置满足。
 
-**0.5.0 终审遗留（随 0.6.0 一并修）**，按评审编号：
+**0.5.0 终审遗留 + spec review 的越界发现（均随 0.6.0 一并修）**，按评审编号：
 
 | # | 遗留 | 影响 |
 |---|---|---|
@@ -21,6 +21,8 @@
 | M3 | `toV1Task` / `v1Part` / `v1TaskState` 无运行期兜底 | `toV1Task` 是公开导出；JS 调用方传非法 state 会得到**没有 `state` 的 status**，未知 kind 会得到 `parts:[null]`，缺 `status` / `history` 非数组则直接抛 `TypeError` |
 | M4 | 请求带 `message.metadata` 时，v0.3 `message/send` 响应的 `history[]` 多出 `metadata` 字段 | 0.5.0 已按 spec 裁定为"原样透传"；缺的是**钉死行为的测试 + 文档**，不是改行为 |
 | M5 | `X-A2A-Version: ""`（空值）→ 400，文案 `unsupported A2A version （本服务器 0.3.0）` | 空头应等价于"没带"，当前把客户端笔误变成难懂的 400 |
+| M6 | `normalizeTask` 只归一 `status.state` 与 artifact parts；v1 响应的 `status.message` / `history[]` 仍是 `ROLE_*`、part 无 `kind`（spec review 越界发现 #2） | 客户端返回的 Task 里 role 大小写混用、part 形状与内部模型不一致；0.6.0 让 v1 成为严格对端的正式路径后更明显 |
+| M7 | `-32003` 双语义：网关用它表示"上游不可用"（`classifyError` → 可重试），本服务端用同一码表示 `PUSH_NOTIFICATION_NOT_SUPPORTED`（spec review 越界发现 #3） | 客户端可能建议对"不支持推送"重试；本包工具虽不发 push 方法，但分类 API 是错的 |
 
 ## 2. 目标与非目标
 
@@ -33,6 +35,8 @@
 - M3：`toV1Task` 对非法输入**不抛、不出 `null`/缺 `state`**，覆盖 §3.4 列出的**全部**形状（task/status 非对象、state 非法、`history`/`artifacts`/`parts` 非数组、part 畸形）。
 - M5：空/纯空白 `X-A2A-Version` 视为"没带"。
 - M4：不改行为，补测试与 README 说明。
+- M6：v1 响应的 `status.message` / `history[]` 归一成内部形状（小写 role、part 带 `kind`、message 带 `kind:'message'`），合法输入幂等。
+- M7：`-32003` 按**方法**消歧——push 配置方法不可重试，其余保持"上游不可用可重试"；`A2aRpcError` 携带方法名让分类有据。
 
 **非目标**
 
@@ -40,7 +44,8 @@
 - 不做 `ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` 的**实现**（仍 `-32601`，只是响应头改对）。
 - 不实现推送通知：v1.0 的 `CreateTaskPushNotificationConfig` / `GetTaskPushNotificationConfig` / `ListTaskPushNotificationConfigs` / `DeleteTaskPushNotificationConfig` 映射到现有 `-32003`（`PUSH_NOTIFICATION_NOT_SUPPORTED`）分支，不新建实现。
 - **不扩大 v0.3 的行为面**：`tasks/pushNotificationConfig/list` / `/delete` 今天走 default → `-32601`，本轮**不进路由表**（见 §3.3）。
-- 不改响应解析（0.4.0 已完成 v1 响应归一；`normalizeTask` 不回译 `history[].role` 属既有缺口，见 §6"已知未修"）。
+- 不改响应解析的其它部分（状态归一、artifact parts 归一已由 0.4.0 完成；本轮只补 M6 的 message 归一）。
+- 不改 `-32003` 的数值或服务端语义（协议里它就是 `PUSH_NOTIFICATION_NOT_SUPPORTED`；冲突在客户端分类侧解决）。
 - 不做 `metadata.kind` 的异步语义（`request`/`result` 仍是透传标记）。
 - 不切默认版本，不改版本协商顺序，不加"强制 v0.3 出站"的配置开关（回滚方式 = 降级包版本；见 §6）。
 - 不动 `0.5.0` 已发布的 npm 版本（新版本号 `0.6.0`）。
@@ -209,11 +214,38 @@ export function checkVersionHeader(
 - `docs/requirements.md`：
   - **基线行**（现 `:6`）改为 `@celumin/dsh-a2a@0.6.0` 已发布 / 下一个交付 `0.7.0`（待定）；
   - R8 状态改成**不虚报**的写法：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见 §4 矩阵 18）`——需求原文的验收含"回归 Pi/Hermes 两条宽容链路"，仓库内等价物不能替代真实联调；
-  - R8 条目补"验收证据"（strict proxy 用例名、capture 断言、`npm test` 计数）与"0.5.0 遗留修复（M1–M5）"一行；
+  - R8 条目补"验收证据"（strict proxy 用例名、capture 断言、`npm test` 计数）与"遗留修复（M1–M7：M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）"一行；
   - R8 在 `:193` 的映射表行同步改状态。
 - **0.5.0 spec 加一行取代注记**（保留原文）：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md` §3.1 的表头下加
   "> 0.6.0 更正：本表的响应头规则由 `2026-10-26-client-v1-outbound-and-v1-followups-design.md` §3.3 取代（v1 名字全集 11 个，push 配置族也判 `1.0`）。"
   否则两份 spec 并存会让人按旧表把 M1 改回去。
+
+### 3.8 v1 响应 message 归一（M6）
+
+`src/compat.ts` 新增内部函数 `normalizeMessage(raw): A2aMessage | undefined`，`normalizeTask` 对 `status.message` 与 `history[]` 应用它：
+
+- `role`：`ROLE_USER` / `user` → `user`；`ROLE_AGENT` / `agent` → `agent`；**其它值原样保留**（不认识就不猜，保持证据）。
+- `parts`：逐项 `normalizePart`；非对象项（`null`/标量）**丢弃**（不再把 `null` 透传给内部模型）。
+- 补 `kind:'message'`（内部模型的判别字段；v1 message 没有它）。
+- 其余字段（`messageId` / `taskId` / `contextId` / `metadata`）原样保留。
+- 对 v0.3 输入**幂等**：role 已是小写、part 已有 `kind`、message 已有 `kind` → 输出与输入逐字段相同。
+- `history` 不是数组时保持现状（不新增字段，也不把 `history:'x'` 变成 `[]`）。
+
+### 3.9 `-32003` 双语义消歧（M7）
+
+同一个 `-32003` 在两个生态里含义不同：A2A 协议是 `PUSH_NOTIFICATION_NOT_SUPPORTED`，a2a-way 网关把它复用为"上游不可用"。**不改数值**（协议正确性优先），在客户端分类侧消歧：
+
+```ts
+export function classifyError(code: number, method?: string): { retryable?: boolean }
+
+// -32003 + push 配置方法 → { retryable: false }
+// -32003 + 其它/未给方法 → { retryable: true }（网关语义，保持 R5 的既有行为）
+```
+
+- push 配置方法判定：`tasks/pushNotificationConfig/` 前缀，或 §3.3 的 4 个 v1 push 名字。
+- `A2aRpcError` 增加 `readonly method?: string`（构造器第 4 个可选参数）；`A2aClient.rpc()` 在**收到 JSON-RPC 错误**时带上本次 `method`（传输层 `-1` 不带）；`sendStream` 的 JSON-RPC 错误带 `methodsFor(version).stream`。
+- `src/tools.ts` 的 `failure()` 改为 `classifyError(error.code, error.method)`，工具描述里 `retryable` 的说明补一句"push 配置方法的 `-32003` 为 false"。
+- **现状不变的部分**：本包工具只发 send/get/cancel，永远不会命中 push 分支，所以工具输出与今天一致；修的是分类 API 与错误对象，让将来接 push 或第三方调用不会拿到"重试一个不支持的能力"的建议。
 
 ## 4. 验收矩阵
 
@@ -239,11 +271,14 @@ export function checkVersionHeader(
 | 16 | v0.3 `message/send`（带 metadata） | `history[]` 保留同一 `metadata`（意图行为） |
 | 17 | 全量回归 | 既有 smoke 68 + compat 51 全绿；`npm run verify`；`npm run prepack` |
 | 18 | **真实 Pi / Hermes 各一次 `a2a_send`（人工联调，记录写进 README）** | 成功 + 对端回包形状记录；**未执行前 R8 不标"已完成"** |
+| 19 | v1 响应（strict proxy → 真实 0.5.0 服务端）的 message 归一 | `history[]` / `status.message` 的 role 是 `user`/`agent`、part 带 `kind`、message 带 `kind:'message'` |
+| 20 | `classifyError(-32003, 'CreateTaskPushNotificationConfig')` / `(-32003)` / `(-32003, 'message/send')` | `{retryable:false}` / `{retryable:true}` / `{retryable:true}` |
+| 21 | v1 响应的 JSON-RPC 错误 | `A2aRpcError.method === 'SendMessage'`（错误对象携带方法名，分类据此消歧） |
 
 ## 5. 测试计划
 
-- **compat 单测**：矩阵 1–3、13–14（`wireMessageFor` / `toV1Task` 兜底）、`checkVersionHeader` 的取值/优先级/非字符串拒绝。
-- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫 + 错误码）、8–12（响应头、push 配置家族、v0.3 `/list` `/delete`、版本门）、15–16（metadata 钉死）；**外加真值不漂移**：`import { RPC_ROUTES }` 跑 §3.3 的 5 条不变量。
+- **compat 单测**：矩阵 1–3、13–14（`wireMessageFor` / `toV1Task` 兜底）、`checkVersionHeader` 的取值/优先级/非字符串拒绝、矩阵 19 的 `normalizeTask` message 归一（含 v0.3 幂等）、矩阵 20 的 `classifyError` 消歧。
+- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫 + 错误码）、8–12（响应头、push 配置家族、v0.3 `/list` `/delete`、版本门）、15–16（metadata 钉死）、19/21（v1 响应 message 归一 + 错误对象带方法）；**外加真值不漂移**：`import { RPC_ROUTES }` 跑 §3.3 的 5 条不变量。
 - **strict fixture**：测试内联的小 proxy（`node:http`）：解析 `SendMessage` 的 `params.message`，若含 `kind`、或 `role` 不以 `ROLE_` 开头、或 part 含 `kind` → 回 `-32602`；否则转发给真实 `A2aServer` 并把响应原样回传；卡片改用 `supportedInterfaces:[{url:<proxy>,protocolVersion:'1.0'}]`。**只存在于 tests，不进生产代码**。
 - **回归**：v0.3 链路的仓库内等价物——现有 `v10Card` / `v03Card` capture 用例、A2aClient 回环、`message/stream` SSE 用例。
 - **人工联调（矩阵 18）**：真实 Pi / Hermes 各一次 `a2a_send`；结果与回包形状记进 README 的联调小节，未执行则 R8 保持"进行中"。
@@ -260,10 +295,8 @@ export function checkVersionHeader(
 - **M5 放宽空头**：空头从 400 变 200 —— 只影响畸形请求，不掩盖真实版本冲突（`2.0` 仍 400）。
 - **结构化兜底的代价**：`toV1Task` 对"根本不是 task"的输入返回退化骨架，可能把调用方的 bug 变成静默空任务。取舍：公开导出的序列化器优先"不崩、不产 `null`"，由测试与文档钉死形状；服务端内部调用永远传合法快照，不受影响。
 
-**已知未修（来自 spec review 的越界发现，0.6.0 不吸收，另行评估）**：
-
-1. `normalizeTask` 不回译 `history[].role`：v1 响应的 `history` 里仍是 `ROLE_AGENT`，客户端返回的 Task 会混用大小写 role。既有缺口（0.4.0），0.6.0 不改响应归一。
-2. `classifyError(-32003)` 仍标 `retryable:true`（历史语义"上游不可用"），而本服务端用同一码表示 `PUSH_NOTIFICATION_NOT_SUPPORTED`；客户端可能建议对"不支持推送"重试。0.6.0 不改错误分类。
+- **v1 响应归一（M6）的边界**：只补 `status.message` / `history[]`；`history` 不是数组时保持现状（不凭空造 `[]`）。未知 role 原样保留，不猜成 `user`/`agent`。
+- **`-32003` 消歧（M7）的边界**：只在客户端分类侧按方法名区分；服务端仍按协议返回 `-32003`，网关仍用它表示上游不可用。方法名缺失时保持旧行为（可重试），这是 R5 的既定取舍。
 
 ## 7. 执行者裁定（builder-check + spec review 后由实现方拍板，需人确认）
 
@@ -273,7 +306,9 @@ export function checkVersionHeader(
 | 2 | `X:""` + `A:2.0` / `A:""` / 非字符串头 | 空 X 等于没带 → 回落 A；`A:2.0` → 400（文案含 `2.0`）；`A:""` → 200 + `0.3.0`；`string[]` 头 → `ok:false`，`raw` 用 `','.join` | "先挑值、再校验"同时满足"空头等价没带"和"X 优先"；空 X 压制 A 会让 `2.0` 静默通过。数组不 join 定规则，实现者会各自猜文案。 |
 | 3 | 真实 v1 服务端上的 `sendStream` | 发请求前抛 `-32601` | 不抛则 v1 帧被只认 `event.kind` 的解析器全部跳过 → 静默空数组：既无错误也无事件。码值必须是 `-32601` 而不是 `-1`：`classifyError(-1)` → `retryable:true`，会诱导模型重试一个必然失败的调用。 |
 | 4 | `toV1Task` 兜底到底覆盖哪些形状？ | 覆盖 §3.4 全部结构性畸形（task/status 非对象、数组非数组、message 非对象、part 二分支）；task 非对象返回退化骨架 | 只兜"字段畸形"会让 `{kind:'task',id,contextId}`（缺 status）仍抛 `TypeError`，与"公开导出不崩"的目标自相矛盾。代价是可能把调用方 bug 变成空任务，用测试与 §3.4 钉死形状。 |
+| 5 | M6 归一哪些 message？未知 role 怎么办？ | `status.message` + `history[]`；未知 role 原样保留 | 只补 role 会让 `history[].parts` 仍是"无 kind 的成员形态"，内部消费方按 `kind` 分支会读不到；未知 role 猜成 `user` 会掩盖对端 bug。 |
+| 6 | M7 怎么消歧 `-32003`？ | 客户端 `classifyError(code, method?)` + `A2aRpcError.method`；不改数值、不改服务端 | 改数值会破坏 A2A 协议语义与 0.5.0 已发布行为；让 `-32003` "不表态"会丢掉 R5 的"网关上游不可用可重试"建议。方法名是唯一可靠且不破坏两边的区分点。 |
 
 ## 8. 工量
 
-约 **1.4 人天**（比 v2 多 0.2：结构性兜底与真值不变量测试）：R8 纯函数 + client 接线 0.3；strict fixture 与字节断言 0.4；M1/M2 与不变量测试 0.2；M3/M5 0.3；文档与发布准备 0.2。
+约 **1.6 人天**（v4 比 v3 多 0.2：M6 响应归一 + M7 错误消歧）：R8 纯函数 + client 接线 0.3；strict fixture 与字节断言 0.4；M1/M2 与不变量测试 0.2；M3/M5 0.3；M6/M7 0.2；文档与发布准备 0.2。
