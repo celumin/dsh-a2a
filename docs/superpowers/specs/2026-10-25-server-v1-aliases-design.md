@@ -47,6 +47,11 @@ builder-check 纠正了初稿的一个重要假设：**光加方法别名不够*
 
 ### 3.1 版本头
 
+> **0.6.0 更正（2026-10-27）**：下面这条"响应头 A2A-Version = 方法的 wire 版本"的**方法名集合**由
+> `2026-10-26-client-v1-outbound-and-v1-followups-design.md` §3.3 取代——v1 名字全集 11 个
+> （含 `ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` / push 配置族）均判 `1.0`；
+> `SendMessage`/`GetTask`/`CancelTask` 的别名分发不变。原文保留以记录 0.5.0 当时的契约。
+
 ```text
 allowedMajors = {"0", "1"}
 请求头 major ∈ allowedMajors → 继续；否则 400（文案不变）

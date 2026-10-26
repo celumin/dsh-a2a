@@ -1,14 +1,15 @@
 # dsh-a2a 0.6.0 设计：出站报文按版本切换（R8）+ 0.5.0 遗留修复
 
-> 状态：定稿 v2（builder-check 后修订）
-> 日期：2026-10-26
+> 状态：定稿 v3（spec review 吸收后修订）
+> 日期：2026-10-26（v3：2026-10-27）
 > 范围：dsh-a2a 0.6.0
 > 需求来源：`docs/requirements.md` R8（0.6.0 候选）；0.5.0 分支终审的 deferred minors
 > 关联：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（0.5.0，已发布）、`docs/debug/A2A_pi_agent_communication.md`（真实 v1.0 wire 抓包）
+> 证据基线：`@celumin/dsh-a2a@0.5.0` 已发布 = tag `v0.5.0` @ `e1a1b18`（npm dist-tag `latest`）；本轮改动起点 `cd82893`。
 
 ## 1. 背景
 
-**R8（主需求）**：0.4.0/0.5.0 的出站 `message/send` / `SendMessage` 请求体**恒为 v0.3 形状**——`role:"user"`、`kind:"message"`、`parts[].kind`。Pi / Hermes 宽容，严格 ProtoJSON v1.0 服务端会以 `-32602` 拒绝；0.4.0 时没有严格验收对象，所以一直押后。0.5.0 已发布，服务端 v1.0 入口（`SendMessage` + `ROLE_USER` + 无 `kind` 的 part）可当**严格 fixture**，前置满足。
+**R8（主需求）**：0.4.0/0.5.0 的出站 `message/send` / `SendMessage` 请求体**恒为 v0.3 形状**——`role:"user"`、`kind:"message"`、`parts[].kind`。Pi / Hermes 宽容，严格 ProtoJSON v1.0 服务端会以 `-32602` 拒绝；0.4.0 时没有严格验收对象，所以一直押后。0.5.0 已发布（tag `v0.5.0` @ `e1a1b18`），服务端 v1.0 入口（`SendMessage` + `ROLE_USER` + 无 `kind` 的 part）可当**严格 fixture**，前置满足。
 
 **0.5.0 终审遗留（随 0.6.0 一并修）**，按评审编号：
 
@@ -16,7 +17,7 @@
 |---|---|---|
 | M1 | `ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` 等**真实 v1.0 方法名**未实现时 `-32601` 的响应头是 `0.3.0` | v1 客户端看到版本不匹配而不是"方法不支持" |
 | M2 | v1 方法名真值三处重复：`V1_METHODS`、`V1_WIRE_METHODS`、`server.ts` 的 `switch` 字面量；`isV1Method` 生产路径未用 | 加别名时改漏一处 → 头对但分发 `-32601`，或反之 |
-| M3 | `toV1Task` / `v1Part` / `v1TaskState` 无运行期兜底 | `toV1Task` 是公开导出；JS 调用方传非法 state 会得到**没有 `state` 的 status**，未知 kind 会得到 `parts:[null]` |
+| M3 | `toV1Task` / `v1Part` / `v1TaskState` 无运行期兜底 | `toV1Task` 是公开导出；JS 调用方传非法 state 会得到**没有 `state` 的 status**，未知 kind 会得到 `parts:[null]`，缺 `status` / `history` 非数组则直接抛 `TypeError` |
 | M4 | 请求带 `message.metadata` 时，v0.3 `message/send` 响应的 `history[]` 多出 `metadata` 字段 | 0.5.0 已按 spec 裁定为"原样透传"；缺的是**钉死行为的测试 + 文档**，不是改行为 |
 | M5 | `X-A2A-Version: ""`（空值）→ 400，文案 `unsupported A2A version （本服务器 0.3.0）` | 空头应等价于"没带"，当前把客户端笔误变成难懂的 400 |
 
@@ -26,9 +27,9 @@
 
 - 出站 message 形状**按协商版本**：v1.0 → `role:"ROLE_USER"`、无 `kind`（message 与 part 都没有）、part 用成员形态；v0.3 → 与 0.5.0 逐字段一致。
 - 用**严格验收对象**证明改对：0.5.0 服务端 + 一个"只接受 v1 形状、否则 `-32602`"的 strict proxy，端到端跑通 `SendMessage`；同时用 capture 断言线上字节。
-- 回归 v0.3 链路（`message/send`、`tasks/get`、`tasks/cancel`、SSE）与"宽容 v1"链路（现有捕获）：字节与行为都不变。
+- 回归 v0.3 链路（`message/send`、`tasks/get`、`tasks/cancel`、SSE）：字节与行为都不变。
 - M1/M2：v1 方法名**单一真值表**（含 push-notification-config 家族）；响应头按方法名判 `1.0`——未实现的 `-32601`、推送配置 `-32003`。
-- M3：`toV1Task` 对非法输入**不抛、不出 `null`/缺字段**。
+- M3：`toV1Task` 对非法输入**不抛、不出 `null`/缺 `state`**，覆盖 §3.4 列出的**全部**形状（task/status 非对象、state 非法、`history`/`artifacts`/`parts` 非数组、part 畸形）。
 - M5：空/纯空白 `X-A2A-Version` 视为"没带"。
 - M4：不改行为，补测试与 README 说明。
 
@@ -37,7 +38,8 @@
 - 不做 `SendStreamingMessage` / v1 SSE 帧；`message/stream` 行为与形状不变。
 - 不做 `ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` 的**实现**（仍 `-32601`，只是响应头改对）。
 - 不实现推送通知：v1.0 的 `CreateTaskPushNotificationConfig` / `GetTaskPushNotificationConfig` / `ListTaskPushNotificationConfigs` / `DeleteTaskPushNotificationConfig` 映射到现有 `-32003`（`PUSH_NOTIFICATION_NOT_SUPPORTED`）分支，不新建实现。
-- 不改响应解析（0.4.0 已完成 v1 响应归一）。
+- **不扩大 v0.3 的行为面**：`tasks/pushNotificationConfig/list` / `/delete` 今天走 default → `-32601`，本轮**不进路由表**（见 §3.3）。
+- 不改响应解析（0.4.0 已完成 v1 响应归一；`normalizeTask` 不回译 `history[].role` 属既有缺口，见 §6"已知未修"）。
 - 不做 `metadata.kind` 的异步语义（`request`/`result` 仍是透传标记）。
 - 不切默认版本，不改版本协商顺序，不加"强制 v0.3 出站"的配置开关（回滚方式 = 降级包版本；见 §6）。
 - 不动 `0.5.0` 已发布的 npm 版本（新版本号 `0.6.0`）。
@@ -79,6 +81,7 @@ const message: A2aMessage = {
 - `sendStream` 仍只在 v0.3 被自动选中（`src/client.ts:452`）；直接调用时也按版本序列化。
 - **新增显式守卫**：协商到 v1.0 时 `sendStream` 在发请求**之前**抛 `A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`。
   - **不抛会怎样**（这是选它的理由，不是补充说明）：真实 v1.0 服务端会**成功**接受 `SendStreamingMessage` 并回 `{statusUpdate}` / `{artifactUpdate}` 帧；现有解析器只认 v0.3 的 `event.kind`，会把这些帧全部跳过 → **不报错、返回空事件数组**。调用方看到"流结束了但什么都没发生"，既拿不到错误码也拿不到事件，比一个明确的 `-32601` 难排查得多。所以宁可提前失败，也不做"宽容地返回空数组"。
+  - **为什么是 `-32601` 而不是本地错误码 `-1`**：`classifyError(-1)` 返回 `{retryable:true}`（`src/compat.ts:213-217`），工具层会把 `retryable` 交给模型，模型会对一个必然失败的调用反复重试；`-32601` 在 `classifyError` 里不表态，且与对端"`SendStreamingMessage` 未实现"的错误码一致。
   - 对 0.5.0 服务端两种做法都是 `-32601`，语义一致；`sendForText` 的自动选路不变（v1 从不选流式）。
 
 ### 3.3 v1 方法名单一真值（M1 + M2）
@@ -102,6 +105,8 @@ export function isV1Method(method: string): boolean  // V1_ALIASES
 export function wireVersionFor(method: string): '1.0' | '0.3.0'  // V1_METHOD_NAMES
 ```
 
+**名字来源**：仓库里没有 A2A v1 proto/规范副本；上表按 A2A 1.0 服务方法集（`SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`SubscribeToTask`、`GetExtendedAgentCard`、`CreateTaskPushNotificationConfig`、`GetTaskPushNotificationConfig`、`ListTaskPushNotificationConfigs`、`DeleteTaskPushNotificationConfig`）固定，**本节即仓库内的权威表**。增删名字必须同步本节、`src/protocol.ts` 与 §4 矩阵。
+
 push-notification-config 家族在 `dispatch` 里与 v0.3 的两个等价名**共用同一个分支**：返回 `-32003` + `'本 A2A 服务器不支持推送通知'`，只是响应头是 `1.0`（v1 名字）。
 
 **必须区分两个集合**（这是最容易做错的一处）：
@@ -111,10 +116,21 @@ push-notification-config 家族在 `dispatch` 里与 v0.3 的两个等价名**�
 
 所以 4 个 push 配置名字：**在** `V1_METHOD_NAMES`、**不在** `V1_ALIASES`、`isV1Method === false`、handler 是 `pushConfig`（返回 `-32003`），**不得**给它们加 `SendMessage` 式的别名分发——"实现推送通知"是 spec 的非目标。把它们加进 `V1_ALIASES` 会同时把 `-32003` 变成真实实现或 `-32601`，两种都错。
 
-`src/server.ts` 的 `dispatch` 改为**表**，不再有第三份字面量：
+**v0.3 侧不要顺手补齐**：A2A 0.3 的 push 配置方法集还有 `tasks/pushNotificationConfig/list` / `/delete`，本服务端**从未实现**，今天走 default → `-32601`。本轮**不把它们加进路由表**：
+
+- 保持已发布的 v0.3 线上行为（`-32601`），不把"未实现"悄悄变成"不支持推送"（`-32003`）；
+- 若将来要补，单独登记为行为变更并加矩阵行，而不是夹在 0.6.0 里。
+
+`server.ts:16` 的模块注释（写 `tasks/pushNotificationConfig/*` → `-32003`）本轮**顺手改成 `set|get`**，让注释与实现一致。
+
+`src/server.ts` 的 `dispatch` 改为**模块级导出的表**（导出是为了让测试能枚举真值，不是公开 API）：
 
 ```ts
-private static readonly RPC_ROUTES: Record<string, { handler: 'send' | 'getTask' | 'cancel' | 'pushConfig'; v1: boolean }> = {
+export interface RpcRoute {
+  readonly handler: 'send' | 'getTask' | 'cancel' | 'pushConfig'
+  readonly v1: boolean
+}
+export const RPC_ROUTES: Readonly<Record<string, RpcRoute>> = {
   'message/send': { handler: 'send', v1: false },
   SendMessage:    { handler: 'send', v1: true },
   'tasks/get':    { handler: 'getTask', v1: false },
@@ -131,37 +147,72 @@ private static readonly RPC_ROUTES: Record<string, { handler: 'send' | 'getTask'
 ```
 
 - 未命中 → 现状 `-32601`；`agent/authenticatedExtendedCard`、`tasks/resubscribe` 保持各自分支。
-- 测试兜住一致性：`V1_ALIASES ⊆ V1_METHOD_NAMES`；`RPC_ROUTES` 的每个 `v1:true` 键 ∈ `V1_METHOD_NAMES`；`V1_ALIASES` 的每个名字在 `RPC_ROUTES` 里的 handler 不是 `pushConfig`；`V1_ALIASES` 的三个名字 `isV1Method === true`，其余 v1 名字为 `false`。
+- **用测试兜住真值不漂移**（这是 M2 的验收，不是锦上添花）：在 smoke 里 `import { RPC_ROUTES }`，断言
+  1. `V1_ALIASES` 的每个名字 ∈ `V1_METHOD_NAMES`，且 `isV1Method(name) === true`；
+  2. `RPC_ROUTES` 里每个 `v1:true` 的键 ∈ `V1_METHOD_NAMES`；
+  3. `RPC_ROUTES` 里 `handler === 'pushConfig'` 的键，`v1` 必须是 `V1_METHOD_NAMES.includes(key)`（push 名字 1.0、v0.3 名字 0.3.0）；
+  4. `V1_ALIASES` 的名字在 `RPC_ROUTES` 里的 handler 不是 `pushConfig`；
+  5. `V1_METHOD_NAMES` 中不属于 `V1_ALIASES` 的名字，`isV1Method === false`。
 
 ### 3.4 `toV1Task` 运行期兜底（M3）
 
-- `v1TaskState`：`unknown` 之外、不在映射表的 state（JS 调用方传 `"bogus"`）→ `TASK_STATE_UNSPECIFIED`；缺失 state 同此。
-- `v1Part` / part 列表：part 不是对象或 `kind` 无法识别 → **该 part 从输出中省略**（绝不出现 `null`）；`message.parts` 不是数组 → `[]`。
-- `v1Message`：`message` 不是对象 → 返回 `{}`（不抛）。
-- 合法输入输出**逐字段不变**（0.5.0 已发布行为不回退）。
+`toV1Task` 是 `./protocol` 的公开导出，可能被 JS 调用方喂进非 task 形状；本节把兜底范围写死，矩阵 13–14 逐条对应。
+
+- **state**：`unknown` 之外、不在映射表的 state（含缺失、`null`、标量）→ `TASK_STATE_UNSPECIFIED`；`unknown` 分支不变。
+- **status**：`task.status` 不是对象（缺失/`null`/标量）→ 输出 `status:{state:'TASK_STATE_UNSPECIFIED'}`，**不写 `timestamp`**（没有来源就不编造）。
+- **part**（二分规则，矩阵 14 的前提）：
+  - `part.kind` **存在**但不是 `text`/`data`/`file` → 该 part **省略**（不按成员反推，避免把未知类型误读成 text）；
+  - `part.kind` **缺失** → 按成员判别：`text: string` / `data: object`（非数组）/ `file: object` 且含 `uri` 或 `bytes`；判不出 → 省略；
+  - part 不是对象（`null`/标量）→ 省略。
+- **数组与容器**：`message.parts` 非数组 → `[]`；`history` / `artifacts` 非数组 → 省略该字段；artifact 非对象 → 省略该项；`artifact.parts` 非数组 → `[]`。
+- **message**：`status.message` 或 `history[]` 里的项不是对象 → **省略该 message**（不返回 `{}`：`{}` 不是合法 v1 Message，只是把"缺字段"换成另一种非法形状）。
+- **task 本身不是对象**（`null`/标量）：返回 `{status:{state:'TASK_STATE_UNSPECIFIED'}}` 作为退化骨架——调用方传的不是 task，没有任何字段值得保留。
+- **合法输入输出逐字段不变**（0.5.0 已发布行为不回退）。
 
 ### 3.5 版本头（M5）
 
-`handleRpc` 的版本门按"**先挑值、再校验**"两步，抽成纯函数 `checkVersionHeader(x, a)`：
+`handleRpc` 的版本门按"**先挑值、再校验**"三步，抽成纯函数：
 
-1. 取值：`x = X-A2A-Version.trim()`，`a = A2A-Version.trim()`；**空串等价于没带**。
-2. 选择：非空 `x` 用它；否则非空 `a` 用它；都空 → 无头，按 0.3 继续。
-3. 校验：选中的值 `split('.')[0]` 必须是 `0` 或 `1`，否则 400（文案含原始值）。
+```ts
+export function checkVersionHeader(
+  x: unknown,
+  a: unknown,
+): { ok: true } | { ok: false; raw: string }
+```
 
-由此确定的两条边界：`X:'' + A:2.0` → 400（空 X 等于没带，回落到 A）；`A:''`（无 X）→ 200 + `0.3.0`。
+1. **取值**：`x = trim(X-A2A-Version)`，`a = trim(A2A-Version)`；**空串等价于没带**。
+2. **选择**：非空 `x` 用它；否则非空 `a` 用它；都空 → 无头，按 0.3 继续。
+3. **校验**：选中值的主版本必须是 `0` 或 `1`，否则 400，错误体为 `unsupported A2A version <选中的值>（本服务器 0.3.0）`。
+
+边界与实现细节：
+
+- `X:'' + A:2.0` → 400，且文案里的值是**选中的 `2.0`**（不是空的 X）；`X:2.0 + A:0.3` → 400（X 优先）；`A:''`（无 X）→ 200 + `0.3.0`。
+- **非字符串头**（Node 可能给 `string[]`）：视为非法，`ok:false`；`raw` 规则固定为 `Array.isArray(x) ? x.join(',') : String(x)`，避免实现者各自猜 `String([...])` 的格式。
 
 ### 3.6 v0.3 metadata 行为钉死（M4）
 
 **不改行为**。补两条测试 + README 一句：
 
-- 请求**不带** `message.metadata` 时，v0.3 `message/send` 的响应体与 0.5.0 逐字段一致（用同一夹具对比，不断言整对象字节，断言 `history[]` 每项无 `metadata` 键、`status`、`artifacts` 结构一致）。
-- 请求**带** `message.metadata` 时，`history[]` 对应项保留同一 `metadata`（spec §3.3 的裁定），v1 与 v0.3 一致。
+- 请求**不带** `message.metadata` 时，v0.3 `message/send` 的响应体与 0.5.0 逐字段一致（不断言整对象字节；断言 `history[]` 每项无 `metadata` 键、`status` 与 `artifacts` 结构一致）。
+- 请求**带** `message.metadata` 时，`history[]` 对应项保留同一 `metadata`（0.5.0 spec §3.3 的裁定），v1 与 v0.3 一致。
 
 ### 3.7 版本与文档
 
 - `package.json` → `0.6.0`；`lib/` 由 `npm run prepack` 重建并提交。
-- README：§四 新增"出站报文随协商版本切换"（v1.0/v0.3 对照表 + 回退方式）；§六 已知限制删掉"出站仍是 v0.3 形状"，改成"卡片宣称 1.0 但只接受 v0.3 形状的对端会 `-32602`，回退 0.5.0"；§五 的服务端小节补一句 v1 名字的响应头规则（含未实现方法）。
-- `docs/requirements.md`：R8 状态 → `已完成（0.6.0）`，验收证据写进条目；M1–M5 作为"0.5.0 遗留修复"在 R8 条目下加一行引用（不新开 R 编号，避免编号漂移）。
+- README：
+  - §四 新增「出站报文形状（0.6.0）」：v1.0/v0.3 对照表、strict proxy 验收、回退方式（降级 0.5.0）、`sendStream` 在 v1.0 上立即 `-32601`；
+  - §五 服务端小节补：未实现的 v1 名字（`ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` / `SendStreamingMessage`）`-32601` 时头 `1.0`；push 配置族（v1 名字）仍 `-32003`、头 `1.0`；
+  - **§五（现有 `README:279`）**："出站客户端行为不变（仍是 v0.3 形状…）" → "出站形状随协商版本切换（0.6.0，见 §四）"；
+  - **§五（现有 `README:300`）**："0.5.0 的 v1.0 入口…**可用于** 0.6.0…" → "该入口即 strict fixture 的生产侧；回归用例是 `tests/smoke.mjs` 的 strict proxy 用例"；
+  - §六 已知限制第 1 条：改为"出站形状随协商版本切换（0.6.0）；卡片错标 1.0 但只吃 v0.3 形状的对端会 `-32602`"，并补一句"v0.3 `message/send` 响应保留请求里的 `message.metadata`（0.5.0 起的有意行为）"。
+- `docs/requirements.md`：
+  - **基线行**（现 `:6`）改为 `@celumin/dsh-a2a@0.6.0` 已发布 / 下一个交付 `0.7.0`（待定）；
+  - R8 状态改成**不虚报**的写法：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见 §4 矩阵 18）`——需求原文的验收含"回归 Pi/Hermes 两条宽容链路"，仓库内等价物不能替代真实联调；
+  - R8 条目补"验收证据"（strict proxy 用例名、capture 断言、`npm test` 计数）与"0.5.0 遗留修复（M1–M5）"一行；
+  - R8 在 `:193` 的映射表行同步改状态。
+- **0.5.0 spec 加一行取代注记**（保留原文）：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md` §3.1 的表头下加
+  "> 0.6.0 更正：本表的响应头规则由 `2026-10-26-client-v1-outbound-and-v1-followups-design.md` §3.3 取代（v1 名字全集 11 个，push 配置族也判 `1.0`）。"
+  否则两份 spec 并存会让人按旧表把 M1 改回去。
 
 ## 4. 验收矩阵
 
@@ -176,22 +227,25 @@ private static readonly RPC_ROUTES: Record<string, { handler: 'send' | 'getTask'
 | 7 | 客户端 → 真实 0.5.0 服务端（卡片 0.3） | `message/send` + v0.3 形状 + 真实回复（回归） |
 | 8 | `ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` | `-32601` + `A2A-Version: 1.0` |
 | 8b | 4 个 `*TaskPushNotificationConfig(s)` v1 名字 | `-32003` + `A2A-Version: 1.0` |
+| 8c | v0.3 `tasks/pushNotificationConfig/list` / `/delete` | `-32601` + `0.3.0`（**不进表**，保持已发布行为） |
 | 9 | `SendStreamingMessage` | `-32601` + `1.0`（现状保持） |
 | 10 | `message/send` / `tasks/get` / `message/stream` | `A2A-Version: 0.3.0`（现状保持） |
 | 11 | `X-A2A-Version: ""` / 纯空白；`A2A-Version: ""` | 200 + `0.3.0`（等价无头） |
-| 12 | `X:""` + `A:2.0`；`X:2.0`；`A:2.0` | 400（空 X 不压制 A；文案不变） |
-| 13 | `toV1Task({status:{state:'bogus'}})` | `TASK_STATE_UNSPECIFIED`，不抛 |
-| 14 | `toV1Task` 含未知 kind / 非对象 part | 该 part 省略，`parts` 无 `null` |
+| 12 | `X:""` + `A:2.0`；`X:2.0`；`A:2.0` | 400，错误体含**选中的值**（`X:''+A:2.0` → 含 `2.0`） |
+| 13 | `toV1Task` 的非法输入：`state:'bogus'`；缺 `status`；`status:null`；`history:'x'`；`artifacts:[{}]` | 均不抛；status 有 `state`（`TASK_STATE_UNSPECIFIED`）；`history`/`artifacts` 被省略或为空 |
+| 14 | `toV1Task` 的 part 规则 | 显式未知 `kind`（`{kind:'video',text:'x'}`）→ 省略；**缺 `kind`** 的 `{text:'ok'}` → 保留为 `[{text:'ok'}]`；非对象 → 省略 |
 | 15 | v0.3 `message/send`（无 metadata） | 响应 `history[]` 无 `metadata` 键（钉死） |
 | 16 | v0.3 `message/send`（带 metadata） | `history[]` 保留同一 `metadata`（意图行为） |
 | 17 | 全量回归 | 既有 smoke 68 + compat 51 全绿；`npm run verify`；`npm run prepack` |
+| 18 | **真实 Pi / Hermes 各一次 `a2a_send`（人工联调，记录写进 README）** | 成功 + 对端回包形状记录；**未执行前 R8 不标"已完成"** |
 
 ## 5. 测试计划
 
-- **compat 单测**：矩阵 1–3、13–14（`wireMessageFor` / `toV1Task` 兜底）、`checkVersionHeader` 的取值/优先级/拒绝。
-- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫）、8–12（响应头、push 配置家族、版本门）、15–16（metadata 钉死）。
+- **compat 单测**：矩阵 1–3、13–14（`wireMessageFor` / `toV1Task` 兜底）、`checkVersionHeader` 的取值/优先级/非字符串拒绝。
+- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫 + 错误码）、8–12（响应头、push 配置家族、v0.3 `/list` `/delete`、版本门）、15–16（metadata 钉死）；**外加真值不漂移**：`import { RPC_ROUTES }` 跑 §3.3 的 5 条不变量。
 - **strict fixture**：测试内联的小 proxy（`node:http`）：解析 `SendMessage` 的 `params.message`，若含 `kind`、或 `role` 不以 `ROLE_` 开头、或 part 含 `kind` → 回 `-32602`；否则转发给真实 `A2aServer` 并把响应原样回传；卡片改用 `supportedInterfaces:[{url:<proxy>,protocolVersion:'1.0'}]`。**只存在于 tests，不进生产代码**。
-- **回归**：Pi/Hermes 宽容链路的仓库内等价物——现有 `v10Card` / `v03Card` capture 用例、A2aClient 回环、`message/stream` SSE 用例。真实 Pi/Hermes 联调仍是人工/第三会话步骤（写进 §4 验收与 README）。
+- **回归**：v0.3 链路的仓库内等价物——现有 `v10Card` / `v03Card` capture 用例、A2aClient 回环、`message/stream` SSE 用例。
+- **人工联调（矩阵 18）**：真实 Pi / Hermes 各一次 `a2a_send`；结果与回包形状记进 README 的联调小节，未执行则 R8 保持"进行中"。
 - **门禁**：`npm test`、`npm run verify`、`npm run prepack`。
 
 ## 6. 风险
@@ -200,18 +254,25 @@ private static readonly RPC_ROUTES: Record<string, { handler: 'send' | 'getTask'
 - **严格度不止 role/kind**：严格 ProtoJSON 可能还要求时间戳为 `{seconds,nanos}`、Struct 形态等；本轮只切 message 形状（R8 的期望），响应侧仍按成员判别读。若联调发现更多要求，追加到 R8 备注，不在本轮猜。
 - **`messageId` 在严格 v1 里是否必填**：保留（v1 `Message` 有该字段，Hermes 抓包省略但接受）；若对端拒绝，属联调发现项。
 - **M1 的 1.0 头会改变未实现方法的响应头**：从 `0.3.0` 变 `1.0`，对按头判断版本的老客户端是"更准确"而非破坏；无客户端依赖该头做方法探测（0.4.0 客户端只读卡片）。
-- **push 配置族的形态变化**：4 个 v1 名字从 `-32601` 变为 `-32003`（与 v0.3 等价名一致）。依赖"v1 推送配置方法未知"的调用方会看到更精确的错误；没有实现被悄悄加上。
+- **push 配置族的形态变化**：4 个 v1 名字从 `-32601` 变为 `-32003`（与 v0.3 等价名一致）。依赖"v1 推送配置方法未知"的调用方会看到更精确的错误；没有实现被悄悄加上。v0.3 的 `/list`、`/delete` **不动**，仍 `-32601`。
 - **`sendStream` 在 v1.0 上改为立即报错**：直接调用公开 API 的用户从"静默空数组/对端错误"变为结构化 `-32601`；`sendForText` 的自动选路不变（v1 从不选流式）。
 - **M5 放宽空头**：空头从 400 变 200 —— 只影响畸形请求，不掩盖真实版本冲突（`2.0` 仍 400）。
+- **结构化兜底的代价**：`toV1Task` 对"根本不是 task"的输入返回退化骨架，可能把调用方的 bug 变成静默空任务。取舍：公开导出的序列化器优先"不崩、不产 `null`"，由测试与文档钉死形状；服务端内部调用永远传合法快照，不受影响。
 
-## 7. 执行者裁定（builder-check 后由实现方拍板，需人确认）
+**已知未修（来自 spec review 的越界发现，0.6.0 不吸收，另行评估）**：
+
+1. `normalizeTask` 不回译 `history[].role`：v1 响应的 `history` 里仍是 `ROLE_AGENT`，客户端返回的 Task 会混用大小写 role。既有缺口（0.4.0），0.6.0 不改响应归一。
+2. `classifyError(-32003)` 仍标 `retryable:true`（历史语义"上游不可用"），而本服务端用同一码表示 `PUSH_NOTIFICATION_NOT_SUPPORTED`；客户端可能建议对"不支持推送"重试。0.6.0 不改错误分类。
+
+## 7. 执行者裁定（builder-check + spec review 后由实现方拍板，需人确认）
 
 | # | 问题 | 裁定 | 理由 / 反事实 |
 |---|---|---|---|
-| 1 | push-notification-config 家族算不算 v1 名字？ | **算** `V1_METHOD_NAMES`（11 个之一），**不属于** `V1_ALIASES`；走 `pushConfig` 分支返回 `-32003`，头 `1.0` | 它们是真 v1 名字，不纳入则 M1 对这 4 个仍留 `0.3.0`。但"算 v1 名字"只控制响应头；给它们加别名分发等于实现推送通知（非目标），所以 `isV1Method` 必须为 `false`。 |
-| 2 | `X:""` + `A:2.0` / `A:""` | 空 X 等于没带 → 回落 A；`A:2.0` → 400；`A:""` → 200 + `0.3.0` | "先挑值、再校验"是唯一能同时满足"空头等价没带"和"X 优先"的读法；空 X 压制 A 会让 `2.0` 静默通过。 |
-| 3 | 真实 v1 服务端上的 `sendStream` | 发请求前抛 `-32601` | 不抛则 v1 帧（`{statusUpdate}`/`{artifactUpdate}`）被只认 `event.kind` 的解析器全部跳过 → 静默空数组：调用方既无错误也无事件。明确失败优于静默成功。 |
+| 1 | push-notification-config 家族算不算 v1 名字？ | **算** `V1_METHOD_NAMES`（11 个之一），**不属于** `V1_ALIASES`；走 `pushConfig` 分支返回 `-32003`，头 `1.0`；v0.3 `/list` `/delete` **不进表**、仍 `-32601` | 不纳入则 M1 对这 4 个仍留 `0.3.0`；但"算 v1 名字"只控制响应头，给它们加别名分发等于实现推送通知（非目标）。v0.3 `/list` `/delete` 今天是 `-32601`，补进表会把"未实现"改成"不支持推送"，是未登记的线上行为变化。 |
+| 2 | `X:""` + `A:2.0` / `A:""` / 非字符串头 | 空 X 等于没带 → 回落 A；`A:2.0` → 400（文案含 `2.0`）；`A:""` → 200 + `0.3.0`；`string[]` 头 → `ok:false`，`raw` 用 `','.join` | "先挑值、再校验"同时满足"空头等价没带"和"X 优先"；空 X 压制 A 会让 `2.0` 静默通过。数组不 join 定规则，实现者会各自猜文案。 |
+| 3 | 真实 v1 服务端上的 `sendStream` | 发请求前抛 `-32601` | 不抛则 v1 帧被只认 `event.kind` 的解析器全部跳过 → 静默空数组：既无错误也无事件。码值必须是 `-32601` 而不是 `-1`：`classifyError(-1)` → `retryable:true`，会诱导模型重试一个必然失败的调用。 |
+| 4 | `toV1Task` 兜底到底覆盖哪些形状？ | 覆盖 §3.4 全部结构性畸形（task/status 非对象、数组非数组、message 非对象、part 二分支）；task 非对象返回退化骨架 | 只兜"字段畸形"会让 `{kind:'task',id,contextId}`（缺 status）仍抛 `TypeError`，与"公开导出不崩"的目标自相矛盾。代价是可能把调用方 bug 变成空任务，用测试与 §3.4 钉死形状。 |
 
 ## 8. 工量
 
-约 **1.2 人天**：R8 纯函数 + client 接线 0.3；strict fixture 与字节断言 0.4；M1/M2 0.15；M3/M5 0.2；文档与发布准备 0.15。
+约 **1.4 人天**（比 v2 多 0.2：结构性兜底与真值不变量测试）：R8 纯函数 + client 接线 0.3；strict fixture 与字节断言 0.4；M1/M2 与不变量测试 0.2；M3/M5 0.3；文档与发布准备 0.2。
