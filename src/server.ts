@@ -6,6 +6,8 @@
  *   （0.2.x 兼容）：返回 Agent Card；
  * - `POST /` JSON-RPC 2.0：
  *   - `message/send`        同步执行一轮，返回完结后的 Task；
+ *   - `SendMessage` / `GetTask` / `CancelTask`：v1.0 别名，入站归一后走同一
+ *                             handler，响应形状换成 v1（`{task}` / 裸 v1 Task）；
  *   - `message/stream`      SSE 流：status-update / artifact-update 实时推送；
  *   - `tasks/get`           查询任务快照；
  *   - `tasks/cancel`        取消进行中的任务；
@@ -14,8 +16,9 @@
  *   - `tasks/pushNotificationConfig/*` → -32003（未实现推送通知）。
  *
  * 传输细节：
- * - 所有响应带 `A2A-Version` 头；请求带 `X-A2A-Version`/`A2A-Version` 且
- *   主版本不一致时返回 400（0.3 版本协商）；
+ * - 所有响应带 `A2A-Version` 头；RPC 响应的值跟随**请求方法名**的 wire
+ *   版本（v1 方法 1.0，其余 0.3.0），卡片/admin/404 固定 0.3.0；请求带
+ *   `X-A2A-Version`/`A2A-Version` 且主版本不是 0/1 时返回 400；
  * - 可选 Bearer 鉴权（card 中同步宣告 securitySchemes）；
  * - CORS 放开（浏览器端 A2A 客户端直连调试场景）；
  * - 单轮执行有 turnTimeoutMs 上限，超时任务置 failed；
@@ -47,6 +50,8 @@ import {
   jsonrpcResult,
   parseJsonRpcRequest,
   parseMessageSendParams,
+  toV1Task,
+  wireVersionFor,
 } from './protocol.ts'
 import type { StoredTask, TaskController } from './store.ts'
 import { TaskStore, controllerFor } from './store.ts'
@@ -278,8 +283,9 @@ export class A2aServer {
     const requestVersion = req.headers['x-a2a-version'] ?? req.headers['a2a-version']
     if (typeof requestVersion === 'string') {
       const requested = requestVersion.split('.')[0]
-      const supported = PROTOCOL_VERSION.split('.')[0]
-      if (requested !== supported) {
+      // Round 2.6：服务端同时接受 0.x 与 1.x（v1 方法别名 + 入站归一）；
+      // 其他主版本仍 400。方法名而不是头决定响应形状（spec §3.1）。
+      if (requested !== '0' && requested !== '1') {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: `unsupported A2A version ${requestVersion}（本服务器 ${PROTOCOL_VERSION}）` }))
         return
@@ -311,6 +317,9 @@ export class A2aServer {
       return
     }
     const request = parsedRequest.request
+    // 响应头跟随方法的 wire 版本（spec §3.1）：卡片/admin/404 已在入口固定
+    // 0.3.0，这里只覆盖 RPC 响应。
+    res.setHeader('A2A-Version', wireVersionFor(request.method))
     this.logger.debug(`a2a: JSON-RPC ${request.method} (id=${String(request.id)})`)
 
     // SSE 方法在 headers 写出前单独处理（成功响应是 text/event-stream）。
@@ -354,11 +363,19 @@ export class A2aServer {
   private async dispatch(request: JsonRpcRequest): Promise<JsonRpcResponse> {
     switch (request.method) {
       case 'message/send':
-        return this.handleSend(request)
+        return this.handleSend(request, false)
+      // v1.0 别名（Round 2.6 spec §3.2）：入站归一后与 v0.3 handler 共用，
+      // 只有出站包装/版本头按方法名分支。
+      case 'SendMessage':
+        return this.handleSend(request, true)
       case 'tasks/get':
-        return this.handleGetTask(request)
+        return this.handleGetTask(request, false)
+      case 'GetTask':
+        return this.handleGetTask(request, true)
       case 'tasks/cancel':
-        return this.handleCancel(request)
+        return this.handleCancel(request, false)
+      case 'CancelTask':
+        return this.handleCancel(request, true)
       case 'agent/authenticatedExtendedCard':
         return jsonrpcResult(request.id, this.options.card)
       case 'tasks/pushNotificationConfig/set':
@@ -375,7 +392,7 @@ export class A2aServer {
 
   // ── message/send（同步执行）────────────────────────────────────────
 
-  private async handleSend(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  private async handleSend(request: JsonRpcRequest, v1: boolean): Promise<JsonRpcResponse> {
     const parsed = parseMessageSendParams(request.params)
     if (!parsed.ok) {
       return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, parsed.error)
@@ -387,7 +404,9 @@ export class A2aServer {
     const { task, message, history } = prepared
     this.logger.info(`a2a: message/send task=${task.id} context=${task.contextId} turn=${message.messageId}`)
     await this.executeTurn(task, message, history)
-    return jsonrpcResult(request.id, task.snapshot())
+    const snapshot = task.snapshot()
+    // v1.0 SendMessage 的 result 是 {task}；v0.3 message/send 仍是裸 Task。
+    return jsonrpcResult(request.id, v1 ? { task: toV1Task(snapshot) } : snapshot)
   }
 
   /**
@@ -467,7 +486,7 @@ export class A2aServer {
 
   // ── tasks/get、tasks/cancel ────────────────────────────────────────
 
-  private handleGetTask(request: JsonRpcRequest): JsonRpcResponse {
+  private handleGetTask(request: JsonRpcRequest, v1: boolean): JsonRpcResponse {
     const taskId = this.taskIdParam(request.params)
     if (taskId === undefined) {
       return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.id（或 params.taskId）必须是非空字符串')
@@ -476,10 +495,11 @@ export class A2aServer {
     if (!task) {
       return jsonrpcError(request.id, A2A_ERRORS.TASK_NOT_FOUND, `任务 ${taskId} 不存在或已过期回收`)
     }
-    return jsonrpcResult(request.id, task.snapshot())
+    const snapshot = task.snapshot()
+    return jsonrpcResult(request.id, v1 ? toV1Task(snapshot) : snapshot)
   }
 
-  private handleCancel(request: JsonRpcRequest): JsonRpcResponse {
+  private handleCancel(request: JsonRpcRequest, v1: boolean): JsonRpcResponse {
     const taskId = this.taskIdParam(request.params)
     if (taskId === undefined) {
       return jsonrpcError(request.id, RPC_ERRORS.INVALID_PARAMS, 'params.id（或 params.taskId）必须是非空字符串')
@@ -491,7 +511,8 @@ export class A2aServer {
     if (result === 'not-cancelable') {
       return jsonrpcError(request.id, A2A_ERRORS.TASK_NOT_CANCELABLE, `任务 ${taskId} 已完结，无法取消`)
     }
-    return jsonrpcResult(request.id, this.store.get(taskId)?.snapshot() ?? null)
+    const snapshot = this.store.get(taskId)?.snapshot() ?? null
+    return jsonrpcResult(request.id, v1 && snapshot !== null ? toV1Task(snapshot) : snapshot)
   }
 
   /**

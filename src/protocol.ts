@@ -220,6 +220,9 @@ export function buildAgentCard(options: CardOptions): AgentCard {
     url: options.url,
     version: options.version,
     protocolVersion: PROTOCOL_VERSION,
+    // Round 2.6 spec §3.5：补发复数形态，供网关 presenter 如实呈现；单数
+    // 保留，且仍只宣告 0.3.0（服务端 v1 能力不完整，不 overclaim）。
+    protocolVersions: [PROTOCOL_VERSION],
     preferredTransport: 'JSONRPC',
     capabilities: {
       streaming: true,
@@ -459,11 +462,23 @@ export function isV1Method(method: string): boolean {
 }
 
 /**
- * 该方法名对应的 wire 版本（spec §3.1）：v1 方法 → '1.0'，其余 → '0.3.0'。
- * 响应头 A2A-Version 用它，与请求头无关（方法名决定形状与版本）。
+ * v1.0 wire 名字（含未实现、只回 -32601 的 `SendStreamingMessage`）：响应头
+ * 按**方法名**判 1.0（spec §4 矩阵 #8），别名分发仍只看 `V1_METHODS`。
+ */
+const V1_WIRE_METHODS: ReadonlySet<string> = new Set([
+  'SendMessage',
+  'SendStreamingMessage',
+  'GetTask',
+  'CancelTask',
+])
+
+/**
+ * 该方法名对应的 wire 版本：v1.0 名字 → '1.0'，其余（message/send、
+ * message/stream、tasks/*、resubscribe）→ '0.3.0'。响应头 A2A-Version 用它，
+ * 与请求头无关（方法名决定形状与版本，spec §3.1）。
  */
 export function wireVersionFor(method: string): '1.0' | '0.3.0' {
-  return isV1Method(method) ? '1.0' : '0.3.0'
+  return V1_WIRE_METHODS.has(method) ? '1.0' : '0.3.0'
 }
 
 /** v0.3 状态 → v1.0 ProtoJSON 枚举（`auth-required` 也在此表；unknown 单列）。 */

@@ -1007,6 +1007,126 @@ const main = async () => {
     }
   })
 
+  // ── Round 2.6：服务端 v1.0 别名 / 入站双形状 / 响应形状 / 版本头 ──
+
+  const v1Params = (text, extra = {}) => ({
+    message: { role: 'ROLE_USER', parts: [{ text }], messageId: `m-${rpcId()}`, ...extra },
+  })
+
+  await test('Round 2.6：message/send 仍是裸 v0.3 Task + 0.3.0 头', async () => {
+    const { status, response } = await post(rpc, { jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('v03 shape') })
+    const payload = await response.json()
+    assert.equal(status, 200)
+    assert.equal(response.headers.get('a2a-version'), '0.3.0')
+    assert.equal(payload.result.kind, 'task')
+    assert.equal(payload.result.status.state, 'completed')
+    assert.equal(payload.result.artifacts[0].parts[0].kind, 'text')
+  })
+
+  let v1CompletedId
+  await test('Round 2.6：SendMessage + ROLE_USER/无 kind → {task} + TASK_STATE_* + 1.0 头', async () => {
+    const { response } = await post(rpc, {
+      jsonrpc: '2.0', id: 'v1', method: 'SendMessage', params: v1Params('hi v1'),
+    }, { 'X-A2A-Version': '1.0' })
+    const payload = await response.json()
+    assert.equal(response.headers.get('a2a-version'), '1.0')
+    assert.ok(payload.result?.task, `应返回 {task}: ${JSON.stringify(payload)}`)
+    const task = payload.result.task
+    v1CompletedId = task.id
+    assert.equal(task.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal('kind' in task, false)
+    assert.equal('rawState' in task.status, false)
+    assert.equal(task.artifacts[0].parts[0].text, 'echo: hi v1 (#1)')
+    assert.equal('kind' in task.artifacts[0].parts[0], false)
+    assert.equal(task.history[0].role, 'ROLE_USER')
+    assert.equal('kind' in task.history[0], false)
+  })
+
+  await test('Round 2.6：SendMessage 的 status.message 用 ROLE_AGENT 且 part 无 kind', async () => {
+    // status.message 只在 failed/timeout 时由服务器写入（agentNote），所以用
+    // 一个必然抛错的 runner 起第二台服务器。
+    const failing = await startServer({ runner: { async run() { throw new Error('boom') } } })
+    try {
+      const payload = await postJson(failing.url, {
+        jsonrpc: '2.0', id: 'v1b', method: 'SendMessage', params: v1Params('fail me'),
+      }, { 'X-A2A-Version': '1.0' })
+      const task = payload.result.task
+      assert.equal(task.status.state, 'TASK_STATE_FAILED')
+      assert.equal(task.status.message.role, 'ROLE_AGENT')
+      assert.equal('kind' in task.status.message, false)
+      assert.equal('kind' in task.status.message.parts[0], false)
+    } finally {
+      await failing.server.stop()
+    }
+  })
+
+  await test('Round 2.6：SendMessage 无版本头也接受 v0.3 形状，头仍是 1.0', async () => {
+    const { response } = await post(rpc, { jsonrpc: '2.0', id: 2, method: 'SendMessage', params: messageSendParams('no header') })
+    const payload = await response.json()
+    assert.equal(response.headers.get('a2a-version'), '1.0')
+    assert.equal(payload.result.task.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal(payload.result.task.artifacts[0].parts[0].text, 'echo: no header (#1)')
+  })
+
+  await test('Round 2.6：GetTask 返回裸 v1 Task', async () => {
+    const { response } = await post(rpc, {
+      jsonrpc: '2.0', id: 3, method: 'GetTask', params: { id: v1CompletedId },
+    }, { 'X-A2A-Version': '1.0' })
+    const payload = await response.json()
+    assert.equal(response.headers.get('a2a-version'), '1.0')
+    assert.equal(payload.result.id, v1CompletedId)
+    assert.equal(payload.result.status.state, 'TASK_STATE_COMPLETED')
+    assert.equal('kind' in payload.result, false)
+  })
+
+  await test('Round 2.6：CancelTask 返回裸 v1 Task（TASK_STATE_CANCELED）', async () => {
+    const pending = await postJson(rpc, { jsonrpc: '2.0', id: 4, method: 'message/send', params: messageSendParams('NEED_INPUT') })
+    const { response } = await post(rpc, {
+      jsonrpc: '2.0', id: 5, method: 'CancelTask', params: { id: pending.result.id },
+    }, { 'X-A2A-Version': '1.0' })
+    const payload = await response.json()
+    assert.equal(response.headers.get('a2a-version'), '1.0')
+    assert.equal(payload.result.status.state, 'TASK_STATE_CANCELED')
+    assert.equal('kind' in payload.result, false)
+  })
+
+  await test('Round 2.6：message/stream 配 1.0 头仍是 v0.3 帧 + 0.3.0 头', async () => {
+    const response = await fetch(rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-A2A-Version': '1.0' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 's-v1', method: 'message/stream', params: messageSendParams('stream v1 header') }),
+    })
+    assert.equal(response.headers.get('a2a-version'), '0.3.0')
+    const events = await collectSse(response)
+    assert.equal(events[0].kind, 'status-update')
+    assert.equal(events[0].status.state, 'working')
+    assert.equal('TASK_STATE_WORKING' === events[0].status.state, false)
+  })
+
+  await test('Round 2.6：SendStreamingMessage 仍 -32601，头是 1.0', async () => {
+    const { response } = await post(rpc, {
+      jsonrpc: '2.0', id: 6, method: 'SendStreamingMessage', params: v1Params('nope'),
+    }, { 'X-A2A-Version': '1.0' })
+    const payload = await response.json()
+    assert.equal(response.headers.get('a2a-version'), '1.0')
+    assert.equal(payload.error.code, -32601)
+  })
+
+  await test('Round 2.6：版本主号 2.0 仍 HTTP 400', async () => {
+    const { status } = await post(rpc, {
+      jsonrpc: '2.0', id: 7, method: 'SendMessage', params: v1Params('v2'),
+    }, { 'X-A2A-Version': '2.0' })
+    assert.equal(status, 400)
+  })
+
+  await test('Round 2.6：卡片补发复数 protocolVersions（单数保留）', async () => {
+    const response = await fetch(`${base.replace(/\/$/, '')}/.well-known/agent-card.json`)
+    assert.equal(response.headers.get('a2a-version'), '0.3.0')
+    const card = await response.json()
+    assert.equal(card.protocolVersion, '0.3.0')
+    assert.deepEqual(card.protocolVersions, ['0.3.0'])
+  })
+
   await openServer.server.stop()
 
   // ── Bearer 鉴权服务器 ─────────────────────────────────────────────

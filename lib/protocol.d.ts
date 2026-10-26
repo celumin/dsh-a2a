@@ -235,8 +235,9 @@ export declare function parseMessageSendParams(raw: unknown): {
 /** 请求方法名是否属于 v1.0 别名集合。 */
 export declare function isV1Method(method: string): boolean;
 /**
- * 该方法名对应的 wire 版本（spec §3.1）：v1 方法 → '1.0'，其余 → '0.3.0'。
- * 响应头 A2A-Version 用它，与请求头无关（方法名决定形状与版本）。
+ * 该方法名对应的 wire 版本：v1.0 名字 → '1.0'，其余（message/send、
+ * message/stream、tasks/*、resubscribe）→ '0.3.0'。响应头 A2A-Version 用它，
+ * 与请求头无关（方法名决定形状与版本，spec §3.1）。
  */
 export declare function wireVersionFor(method: string): '1.0' | '0.3.0';
 /**
