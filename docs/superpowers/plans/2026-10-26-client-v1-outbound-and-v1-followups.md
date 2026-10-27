@@ -715,9 +715,9 @@ Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `un
 
 - [ ] **Step 3: 实现**
 
-`compat.ts` 的 `classifyError` 从 protocol 引入 `isPushConfigMethod`（常量与函数在 Task 4 已建；protocol 不 import compat，无环），并把 doc 注释从"`-32003`（上游不可用）可重试"改成"`-32003` 按方法消歧：push 配置不可重试，其余可重试"。
+`compat.ts` 的 `classifyError`（规则见 spec §3.9）从 protocol 引入 `isPushConfigMethod`（常量与函数在 Task 4 已建；protocol 不 import compat，无环），并把 doc 注释从"`-32003`（上游不可用）可重试"改成"`-32003` 按方法消歧：push 配置不可重试，其余可重试"。
 
-`compat.ts`：新增内部 `normalizeMessage(raw)`：
+`compat.ts`：新增内部 `normalizeMessage(raw)`（规则见 spec §3.8）：
 - 非对象 → `undefined`；
 - `role`：`ROLE_USER`/`user` → `user`、`ROLE_AGENT`/`agent` → `agent`、其它原样（cast 保留）；
 - `parts`：`Array.isArray ? map(normalizePart).filter(非对象丢弃) : []`；
@@ -749,6 +749,10 @@ git commit -m "fix(compat): normalize v1 response messages and disambiguate -320
 - Modify: `docs/requirements.md`（基线行、R8 状态与验收证据、`:193` 映射行）
 - Modify: `docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（§3.1 加一行取代注记，保留原文）
 - Modify: `package.json`（`version: 0.6.0`）
+
+**Interfaces:**
+- Consumes: 前 6 个 task 的产物（只写文档，不改代码接口）
+- Produces: `README` / `requirements.md` / 0.5.0 spec 注记 / `package.json:0.6.0` / 重建的 `lib/`
 
 - [ ] **Step 1: README**
 
