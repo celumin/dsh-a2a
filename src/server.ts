@@ -50,6 +50,7 @@ import {
   jsonrpcResult,
   parseJsonRpcRequest,
   parseMessageSendParams,
+  checkVersionHeader,
   toV1Task,
   wireVersionFor,
 } from './protocol.ts'
@@ -305,17 +306,16 @@ export class A2aServer {
   // ── JSON-RPC 入口 ───────────────────────────────────────────────────
 
   private async handleRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // 版本协商：主版本不一致直接拒绝（缺头视为同版本，兼容 0.2 客户端）。
-    const requestVersion = req.headers['x-a2a-version'] ?? req.headers['a2a-version']
-    if (typeof requestVersion === 'string') {
-      const requested = requestVersion.split('.')[0]
-      // Round 2.6：服务端同时接受 0.x 与 1.x（v1 方法别名 + 入站归一）；
-      // 其他主版本仍 400。方法名而不是头决定响应形状（spec §3.1）。
-      if (requested !== '0' && requested !== '1') {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: `unsupported A2A version ${requestVersion}（本服务器 ${PROTOCOL_VERSION}）` }))
-        return
-      }
+    // 版本协商：空/纯空白头等价于没带；非空 X-A2A-Version 优先；主版本
+    // 只接受 0/1（spec §3.5）。缺头视为同版本，兼容 0.2 客户端。
+    const gate = checkVersionHeader(
+      req.headers['x-a2a-version'],
+      req.headers['a2a-version'],
+    )
+    if (gate.ok === false) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `unsupported A2A version ${gate.raw}（本服务器 ${PROTOCOL_VERSION}）` }))
+      return
     }
     if (this.options.bearerToken !== undefined && !this.checkAuth(req)) {
       res.writeHead(401, {

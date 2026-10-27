@@ -1313,6 +1313,36 @@ const main = async () => {
     )
   })
 
+  await test('Round 2.6：空 / 纯空白版本头等价于没带（200 + 0.3.0）', async () => {
+    const cases = [{ 'X-A2A-Version': '' }, { 'X-A2A-Version': '   ' }, { 'A2A-Version': '' }]
+    for (const headers of cases) {
+      const { status, response } = await post(rpc, {
+        jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('empty header'),
+      }, headers)
+      assert.equal(status, 200, JSON.stringify(headers))
+      assert.equal(response.headers.get('a2a-version'), '0.3.0')
+    }
+  })
+
+  await test('Round 2.6：空 X 不压制 A（A:2.0 → 400，文案含 2.0）', async () => {
+    const { status, response } = await post(rpc, {
+      jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('precedence'),
+    }, { 'X-A2A-Version': '', 'A2A-Version': '2.0' })
+    assert.equal(status, 400)
+    assert.match(await response.text(), /2\.0/)
+  })
+
+  await test('Round 2.6：v0.3 响应 metadata 钉死（无则无、有则留）', async () => {
+    const plain = await postJson(rpc, { jsonrpc: '2.0', id: 1, method: 'message/send', params: messageSendParams('no metadata') })
+    assert.equal(plain.result.history.some((m) => 'metadata' in m), false)
+
+    const withMeta = await postJson(rpc, {
+      jsonrpc: '2.0', id: 2, method: 'message/send',
+      params: messageSendParams('with metadata', { metadata: { kind: 'request', from: 'tester' } }),
+    })
+    assert.deepEqual(withMeta.result.history[0].metadata, { kind: 'request', from: 'tester' })
+  })
+
   await openServer.server.stop()
 
   // ── Bearer 鉴权服务器 ─────────────────────────────────────────────

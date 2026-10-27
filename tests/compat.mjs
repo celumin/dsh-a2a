@@ -21,6 +21,7 @@ import {
   PUSH_CONFIG_METHOD_NAMES,
   isV1Method,
   wireVersionFor,
+  checkVersionHeader,
 } from '../lib/protocol.js'
 import {
   versionOf,
@@ -525,6 +526,76 @@ test('v1 方法名：全集判 1.0，别名集合只含三个，push 集合不�
     PUSH_CONFIG_METHOD_NAMES.filter((m) => V1_METHOD_NAMES.includes(m)).sort(),
     ['CreateTaskPushNotificationConfig', 'DeleteTaskPushNotificationConfig', 'GetTaskPushNotificationConfig', 'ListTaskPushNotificationConfigs'],
   )
+})
+
+// ── 汇总 ───────────────────────────────────────────────────────────────
+
+test('toV1Task：结构性非法输入不抛、不产 null、status 有 state', () => {
+  const bogusState = toV1Task({
+    kind: 'task', id: 't1', contextId: 'c1',
+    status: { state: 'bogus', timestamp: '2026-01-01T00:00:00Z' },
+  })
+  assert.equal(bogusState.status.state, 'TASK_STATE_UNSPECIFIED')
+  assert.equal('rawState' in bogusState.status, false)
+
+  for (const junk of [
+    { kind: 'task', id: 't2', contextId: 'c2' },            // 缺 status
+    { kind: 'task', id: 't3', contextId: 'c3', status: null },
+    { kind: 'task', id: 't4', contextId: 'c4', status: {}, history: 'x' },
+    { kind: 'task', id: 't5', contextId: 'c5', status: {}, artifacts: [{}] },
+    null,
+  ]) {
+    const out = toV1Task(junk)
+    assert.equal(out.status.state, 'TASK_STATE_UNSPECIFIED')
+    assert.equal('history' in out && Array.isArray(out.history), false)
+  }
+
+  // §3.4 的三条容器规则，各有精确期望（不是"省略或为空"这种两可写法）。
+  const badMsg = toV1Task({ kind: 'task', id: 't6', contextId: 'c6', status: { state: 'completed', message: 'nope' } })
+  assert.equal('message' in badMsg.status, false)
+
+  const badMsgParts = toV1Task({
+    kind: 'task', id: 't7', contextId: 'c7', status: { state: 'completed' },
+    history: [{ role: 'user', messageId: 'm', parts: 'x' }],
+  })
+  assert.deepEqual(badMsgParts.history[0].parts, [])
+
+  const badArtifactParts = toV1Task({
+    kind: 'task', id: 't8', contextId: 'c8', status: { state: 'completed' },
+    artifacts: [{ artifactId: 'a', parts: 'x' }],
+  })
+  assert.deepEqual(badArtifactParts.artifacts[0].parts, [])
+
+  // `{}` 是对象：保留为 {parts:[]}，不因为没有 artifactId 就丢弃（§3.4）。
+  const emptyArtifact = toV1Task({
+    kind: 'task', id: 't9', contextId: 'c9', status: { state: 'completed' }, artifacts: [{}],
+  })
+  assert.deepEqual(emptyArtifact.artifacts, [{ parts: [] }])
+})
+
+test('toV1Task：part 二分支（显式未知 kind 省略；缺 kind 按成员判别）', () => {
+  const out = toV1Task({
+    kind: 'task', id: 't1', contextId: 'c1', status: { state: 'completed', timestamp: '2026-01-01T00:00:00Z' },
+    history: [{
+      kind: 'message', role: 'user', messageId: 'm1',
+      parts: [{ kind: 'video', text: 'x' }, null, { text: 'ok' }, { data: { a: 1 } }],
+    }],
+  })
+  assert.deepEqual(out.history[0].parts, [{ text: 'ok' }, { data: { a: 1 } }])
+})
+
+test('checkVersionHeader：空头等价没带，非空 X 优先，其余主版本拒绝', () => {
+  for (const [x, a] of [[undefined, undefined], ['', undefined], ['   ', '0.3'], ['1.0', '2.0'], [undefined, '0.3']]) {
+    assert.equal(checkVersionHeader(x, a).ok, true, `${x} / ${a}`)
+  }
+  // 空 X 不压制 A：回落到 A 再拒绝；raw 是选中的值。
+  assert.deepEqual(checkVersionHeader('', '2.0'), { ok: false, raw: '2.0' })
+  for (const [x, a] of [['2.0', undefined], [undefined, '2.0'], ['v1.0', undefined]]) {
+    assert.equal(checkVersionHeader(x, a).ok, false, `${x} / ${a}`)
+  }
+  // 非字符串头：非法，raw 取导致拒绝的那个头（先 x 后 a）。
+  assert.deepEqual(checkVersionHeader(['1.0', '2.0'], undefined), { ok: false, raw: '1.0,2.0' })
+  assert.deepEqual(checkVersionHeader('', ['2.0']), { ok: false, raw: '2.0' })
 })
 
 // ── 汇总 ───────────────────────────────────────────────────────────────

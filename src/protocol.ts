@@ -518,38 +518,75 @@ const V1_TASK_STATES: Record<Exclude<TaskState, 'unknown'>, string> = {
   'auth-required': 'TASK_STATE_AUTH_REQUIRED',
 }
 
-/** v1.0 状态串（spec §3.4）：unknown 保留合法 rawState，否则 UNSPECIFIED。 */
-function v1TaskState(status: TaskStatus): string {
-  if (status.state === 'unknown') {
-    return status.rawState !== undefined && /^TASK_STATE_/.test(status.rawState)
-      ? status.rawState
-      : 'TASK_STATE_UNSPECIFIED'
-  }
-  return V1_TASK_STATES[status.state]
+/** JSON 对象（排除 null 与数组）：兜底判据统一用它。 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-/** v1.0 part：去掉判别字段 `kind`，只留成员形态（file 不产生 url）。 */
-function v1Part(part: Part): Record<string, unknown> {
-  const metadata = part.metadata !== undefined ? { metadata: part.metadata } : {}
-  switch (part.kind) {
-    case 'text':
-      return { text: part.text, ...metadata }
-    case 'data':
-      return { data: part.data, ...metadata }
-    case 'file':
-      return { file: part.file, ...metadata }
+/** v1.0 状态串（spec §3.4）：合法映射才转换；unknown 保留合法 rawState；其余 UNSPECIFIED。 */
+function v1TaskState(status: Record<string, unknown>): string {
+  const state = status['state']
+  if (state === 'unknown') {
+    const rawState = status['rawState']
+    return typeof rawState === 'string' && /^TASK_STATE_/.test(rawState) ? rawState : 'TASK_STATE_UNSPECIFIED'
   }
+  if (typeof state === 'string' && Object.prototype.hasOwnProperty.call(V1_TASK_STATES, state)) {
+    return V1_TASK_STATES[state as Exclude<TaskState, 'unknown'>]
+  }
+  return 'TASK_STATE_UNSPECIFIED'
 }
 
-/** v1.0 message：role 用枚举名，parts 去 kind，其余字段原样。 */
-function v1Message(message: A2aMessage): Record<string, unknown> {
+/**
+ * v1.0 part：去掉判别字段 `kind`，只留成员形态（file 不产生 url）。
+ * 二分规则（spec §3.4）：显式 kind 不是三型 → 省略（不按成员反推）；
+ * 缺 kind → 按成员判别（text 字符串 / data 对象非数组 / file 含 uri|bytes）；
+ * 判不出、或 part 不是对象 → undefined。
+ */
+function v1Part(part: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(part)) return undefined
+  const metadata = part['metadata'] !== undefined ? { metadata: part['metadata'] } : {}
+  if ('kind' in part) {
+    switch (part['kind']) {
+      case 'text':
+        return { text: part['text'], ...metadata }
+      case 'data':
+        return { data: part['data'], ...metadata }
+      case 'file':
+        return { file: part['file'], ...metadata }
+      default:
+        return undefined
+    }
+  }
+  if (typeof part['text'] === 'string') return { text: part['text'], ...metadata }
+  if (isRecord(part['data'])) return { data: part['data'], ...metadata }
+  const file = part['file']
+  if (isRecord(file) && ('uri' in file || 'bytes' in file)) return { file, ...metadata }
+  return undefined
+}
+
+/** v1.0 message：role 用枚举名，parts 去 kind，其余字段原样；非对象 → undefined。 */
+function v1Message(message: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(message)) return undefined
   return {
-    role: message.role === 'user' ? 'ROLE_USER' : 'ROLE_AGENT',
-    parts: message.parts.map(v1Part),
-    messageId: message.messageId,
-    ...(message.taskId !== undefined ? { taskId: message.taskId } : {}),
-    ...(message.contextId !== undefined ? { contextId: message.contextId } : {}),
-    ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+    role: message['role'] === 'user' ? 'ROLE_USER' : 'ROLE_AGENT',
+    parts: Array.isArray(message['parts'])
+      ? message['parts'].map(v1Part).filter((part): part is Record<string, unknown> => part !== undefined)
+      : [],
+    messageId: message['messageId'],
+    ...(message['taskId'] !== undefined ? { taskId: message['taskId'] } : {}),
+    ...(message['contextId'] !== undefined ? { contextId: message['contextId'] } : {}),
+    ...(message['metadata'] !== undefined ? { metadata: message['metadata'] } : {}),
+  }
+}
+
+/** v1.0 status：非对象 → 只有 UNSPECIFIED state（不编造 timestamp）；message 非对象 → 省略。 */
+function v1Status(status: unknown): Record<string, unknown> {
+  if (!isRecord(status)) return { state: 'TASK_STATE_UNSPECIFIED' }
+  const message = v1Message(status['message'])
+  return {
+    state: v1TaskState(status),
+    ...(status['timestamp'] !== undefined ? { timestamp: status['timestamp'] } : {}),
+    ...(message !== undefined ? { message } : {}),
   }
 }
 
@@ -557,31 +594,67 @@ function v1Message(message: A2aMessage): Record<string, unknown> {
  * 把内部 Task 快照序列化成 v1.0 形状（spec §3.4）：去 `kind`、状态用
  * `TASK_STATE_*`、role 用 `ROLE_*`、part 去 kind、丢弃内部字段 `rawState`。
  * 只做形状变换，不改 id/contextId/timestamp/artifactId/metadata。
+ *
+ * 公开导出：对非 task 形状做结构性兜底——不抛、不产 `null`、`status` 定有
+ * `state`（规则见 spec §3.4）。合法输入输出逐字段不变。
  */
 export function toV1Task(task: A2aTask): Record<string, unknown> {
-  const status: Record<string, unknown> = {
-    state: v1TaskState(task.status),
-    timestamp: task.status.timestamp,
-    ...(task.status.message !== undefined ? { message: v1Message(task.status.message) } : {}),
-  }
+  if (!isRecord(task)) return { status: { state: 'TASK_STATE_UNSPECIFIED' } }
+  const rawArtifacts = task['artifacts']
+  const artifacts = Array.isArray(rawArtifacts)
+    ? rawArtifacts.filter(isRecord).map((artifact) => ({
+        ...(artifact['artifactId'] !== undefined ? { artifactId: artifact['artifactId'] } : {}),
+        ...(artifact['name'] !== undefined ? { name: artifact['name'] } : {}),
+        ...(artifact['description'] !== undefined ? { description: artifact['description'] } : {}),
+        parts: Array.isArray(artifact['parts'])
+          ? artifact['parts'].map(v1Part).filter((part): part is Record<string, unknown> => part !== undefined)
+          : [],
+        ...(artifact['metadata'] !== undefined ? { metadata: artifact['metadata'] } : {}),
+      }))
+    : undefined
+  const rawHistory = task['history']
+  const history = Array.isArray(rawHistory)
+    ? rawHistory.map(v1Message).filter((message): message is Record<string, unknown> => message !== undefined)
+    : undefined
   return {
-    id: task.id,
-    contextId: task.contextId,
-    status,
-    ...(task.artifacts !== undefined
-      ? {
-          artifacts: task.artifacts.map((artifact) => ({
-            artifactId: artifact.artifactId,
-            ...(artifact.name !== undefined ? { name: artifact.name } : {}),
-            ...(artifact.description !== undefined ? { description: artifact.description } : {}),
-            parts: artifact.parts.map(v1Part),
-            ...(artifact.metadata !== undefined ? { metadata: artifact.metadata } : {}),
-          })),
-        }
-      : {}),
-    ...(task.history !== undefined ? { history: task.history.map(v1Message) } : {}),
-    ...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
+    id: task['id'],
+    contextId: task['contextId'],
+    status: v1Status(task['status']),
+    ...(artifacts !== undefined ? { artifacts } : {}),
+    ...(history !== undefined ? { history } : {}),
+    ...(task['metadata'] !== undefined ? { metadata: task['metadata'] } : {}),
   }
+}
+
+/** 版本头的取值结果：没带 / 合法文本 / 非法非字符串（带 raw）。 */
+function readVersionHeader(
+  value: unknown,
+): { kind: 'absent' } | { kind: 'text'; value: string } | { kind: 'invalid'; raw: string } {
+  if (value === undefined) return { kind: 'absent' }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed === '' ? { kind: 'absent' } : { kind: 'text', value: trimmed }
+  }
+  return { kind: 'invalid', raw: Array.isArray(value) ? value.join(',') : String(value) }
+}
+
+/**
+ * 版本门（spec §3.5）：先挑值（空串等价没带，非空 X 优先），再校验主版本
+ * 只能是 0 或 1。非法非字符串头直接拒绝，`raw` 是导致拒绝的那个头
+ * （先看 X，再看 A2A-Version）。
+ */
+export function checkVersionHeader(
+  x: unknown,
+  a: unknown,
+): { ok: true } | { ok: false; raw: string } {
+  const first = readVersionHeader(x)
+  if (first.kind === 'invalid') return { ok: false, raw: first.raw }
+  const second = first.kind === 'absent' ? readVersionHeader(a) : undefined
+  if (second?.kind === 'invalid') return { ok: false, raw: second.raw }
+  const chosen = first.kind === 'text' ? first.value : second?.kind === 'text' ? second.value : undefined
+  if (chosen === undefined) return { ok: true }
+  const major = chosen.split('.')[0]
+  return major === '0' || major === '1' ? { ok: true } : { ok: false, raw: chosen }
 }
 
 // ── 小工具 ─────────────────────────────────────────────────────────────

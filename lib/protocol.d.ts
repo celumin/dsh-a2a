@@ -262,8 +262,22 @@ export declare function wireVersionFor(method: string): '1.0' | '0.3.0';
  * 把内部 Task 快照序列化成 v1.0 形状（spec §3.4）：去 `kind`、状态用
  * `TASK_STATE_*`、role 用 `ROLE_*`、part 去 kind、丢弃内部字段 `rawState`。
  * 只做形状变换，不改 id/contextId/timestamp/artifactId/metadata。
+ *
+ * 公开导出：对非 task 形状做结构性兜底——不抛、不产 `null`、`status` 定有
+ * `state`（规则见 spec §3.4）。合法输入输出逐字段不变。
  */
 export declare function toV1Task(task: A2aTask): Record<string, unknown>;
+/**
+ * 版本门（spec §3.5）：先挑值（空串等价没带，非空 X 优先），再校验主版本
+ * 只能是 0 或 1。非法非字符串头直接拒绝，`raw` 是导致拒绝的那个头
+ * （先看 X，再看 A2A-Version）。
+ */
+export declare function checkVersionHeader(x: unknown, a: unknown): {
+    ok: true;
+} | {
+    ok: false;
+    raw: string;
+};
 /** 提取消息中的全部文本（text part 顺序拼接；无文本 part 返回空串）。 */
 export declare function extractText(parts: readonly Part[]): string;
 /** data/file part 的简要描述（用于日志与诊断，不参与正文）。 */
