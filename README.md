@@ -254,6 +254,19 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 - **流式只对 v0.3 且 `streaming:true` 启用**；v1.0 一律同步（`SendStreamingMessage` 本轮不实现）。
 - `GetTask` / `CancelTask` 都发 `params.id`（0.3 规范即 `id`）。
 
+### 出站报文形状（0.6.0）
+
+出站 `params.message` 的形状由**卡片协商结果**唯一决定，没有单独开关：
+
+| 协商版本 | `params.message` 形状 |
+|---|---|
+| v1.0 | `role:"ROLE_USER"`；message 与 part **都没有 `kind`**；`parts:[{text}]` / `[{data}]` / `[{file:{uri\|bytes,mimeType,name}}]`；随行 `messageId` / `metadata` / `contextId` / `taskId` |
+| v0.3 | 与 0.5.0 逐字段相同：`kind:"message"`、`role:"user"`、`parts:[{kind:"text",...}]` |
+
+- 严格 ProtoJSON v1.0 对端用「0.5.0 服务端 + 测试内联 strict proxy」验收：proxy 只放行 v1 形状（否则 `-32602`），通过后转发给真实服务端；用例名 `Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状`。
+- 卡片**错标 1.0**、实际只吃 v0.3 形状的对端会收到 `-32602`；回退方式：`dsh plugin add @celumin/dsh-a2a@0.5.0`。
+- `sendStream` 在 v1.0 上立即抛 `A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')`，**不发请求**（v1 的 `{statusUpdate}` / `{artifactUpdate}` 帧本包不解析）。
+
 ### 错误码与重试
 
 | `error_code` | `retryable` | 含义 |
@@ -276,7 +289,7 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 ## 五、服务端：v1.0 兼容（0.5.0 新增）
 
-服务端现在同时接受 **v1.0 与 v0.3 两种入站形状**，响应形状按**请求方法名**决定；出站客户端行为不变（仍是 v0.3 形状，见 §六第一条）。
+服务端现在同时接受 **v1.0 与 v0.3 两种入站形状**，响应形状按**请求方法名**决定；出站形状随协商版本切换（0.6.0，见 §四）。
 
 **方法别名**（未知方法仍 `-32601`）：
 
@@ -291,19 +304,21 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 **v1 Task 形状**：状态用 `TASK_STATE_*`（含 `AUTH_REQUIRED` / `UNSPECIFIED`；`unknown` 的合法 `rawState` 原样输出）、part 去 `kind`、role 用 `ROLE_*`、丢弃内部字段 `rawState`；file part 输出 `{file:{uri|bytes,mimeType,name}}`，**不产生 `url`**。
 
-**响应头 `A2A-Version` 跟随方法**：v1.0 名字（含只回 `-32601` 的 `SendStreamingMessage`）→ `1.0`，其余 → `0.3.0`；卡片 GET、`/admin/*`、404 仍固定 `0.3.0`。请求头 `X-A2A-Version` 主版本接受 `0` 与 `1`（其他仍 HTTP 400），`X-A2A-Version` 优先于 `A2A-Version`。
+**响应头 `A2A-Version` 跟随方法**：v1.0 名字（含只回 `-32601` 的 `SendStreamingMessage`）→ `1.0`，其余 → `0.3.0`；卡片 GET、`/admin/*`、404 仍固定 `0.3.0`。请求头 `X-A2A-Version` 主版本接受 `0` 与 `1`（其他仍 HTTP 400），`X-A2A-Version` 优先于 `A2A-Version`；空 / 纯空白头等价于没带。
+
+未实现的 v1.0 名字（`ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` / `SendStreamingMessage`）回 `-32601` 时响应头是 `1.0`；push 配置族（`CreateTaskPushNotificationConfig` / `GetTaskPushNotificationConfig` / `ListTaskPushNotificationConfigs` / `DeleteTaskPushNotificationConfig`）仍是 `-32003`、头也是 `1.0`；v0.3 的 `tasks/pushNotificationConfig/list` / `/delete` 仍 `-32601`（头 `0.3.0`，本轮刻意不进路由表）。
 
 **卡片**：单数 `protocolVersion: "0.3.0"` 保留，新增复数 `protocolVersions: ["0.3.0"]`；**不宣告 1.0**（服务端能力不完整，不 overclaim）。
 
 **不做**：`SendStreamingMessage` / v1 SSE 帧（`{statusUpdate}` / `{artifactUpdate}`）→ 仍 `-32601`；`message/stream` 的事件形状不变；`ListTasks` / `SubscribeToTask` / `GetExtendedAgentCard` 不做别名。
 
-**与出站 R8 的关系**：0.5.0 的 v1.0 入口（非流式）是一个**严格 v1.0 验收对象**，可用于 0.6.0 出站报文按版本切换（R8，见 `docs/requirements.md`）的 RED→GREEN：起本服务端，按 `SendMessage` 发 `ROLE_USER` + 无 `kind` 的 part，让 0.4.0 客户端指向它。
+**与出站 R8 的关系**：0.5.0 的 v1.0 入口（非流式）即 strict fixture 的**生产侧**：测试内联 proxy 校验出站形状后把原始请求转发给它；回归用例是 `tests/smoke.mjs` 的 strict proxy 用例。
 
 ---
 
 ## 六、已知限制
 
-- **出站 message 仍是 v0.3 形状**（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi 与常见实现宽容；**严格 ProtoJSON v1.0 服务端**（要求 `ROLE_USER`、无 `kind`）出站不在 0.5.0 支持范围（R8，0.6.0 候选）。
+- **出站形状随协商版本切换（0.6.0）**：v1.0 对端收到 `ROLE_USER`、无 `kind` 的 message/part；v0.3 对端字节不变。卡片错标 1.0 但只吃 v0.3 形状的对端会收到 `-32602`（回退 0.5.0）。v0.3 `message/send` 响应保留请求里的 `message.metadata`（0.5.0 起的有意行为）。
 - **不做 v1.0 流式事件**（`SendStreamingMessage` / `{statusUpdate}` / `{artifactUpdate}`）。
 - **服务端永远不会产出 `unknown` / `rawState`**：v0.3 内部状态机只有固定枚举，`toV1Task` 的 `TASK_STATE_UNSPECIFIED` / `rawState` 映射是防御性的（只由纯函数单测覆盖）；`auth-required` 是唯一能在真实服务器上出现的非 0.3 枚举状态。
 - **网关 2.6 之前的卡片接口条目恒为 1.0**：旧网关把 `supportedInterfaces[].protocolVersion` 固定写成 `1.0`，把 v0.3 上游挂在它后面会被用 `SendMessage` 调用。a2a-way Round 2.6 起接口版本如实呈现（fleet 内 `feat/round2.6`），旧网关仍是这个问题。
@@ -327,7 +342,7 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 ```bash
 pnpm verify       # 本地 typecheck（shims/ 提供 @deepseek-ai 结构类型）
-pnpm test         # 核心构建 + smoke（57）+ compat 纯函数单测（38）
+pnpm test         # 核心构建 + smoke（80）+ compat 纯函数单测（59）
 pnpm build:local  # 本地全量构建 lib/（shims 类型校验）
 pnpm build        # 宿主环境全量构建（需要真实 @deepseek-ai/* 类型）
 npm run prepack   # 发布前构建（tsconfig.emit.json + shims）

@@ -3,7 +3,7 @@
 > 位置：`https://github.com/celumin/dsh-a2a.git` 的 `dsh-a2a/docs/requirements.md`
 > 本文件汇总 dsh-a2a fork 包的改进需求。每条需求标注来源、现状、期望、验收、状态与前置。
 > 上游：`https://github.com/zyfgood/dsh-a2a.git`；fork：`https://github.com/celumin/dsh-a2a.git`
-> 当前基线：`@celumin/dsh-a2a@0.3.1`（npm 已发布）；下一个交付：`0.4.0`（Round 2.5，自维护线）
+> 当前基线：`@celumin/dsh-a2a@0.5.0`（npm 已发布；0.6.0 已构建、**待人工发布**）；下一个交付：`0.6.0`
 > 验证环境：dsh CLI `0.2.1-rc.2` · `@deepseek-harness-tui/dsh-tui` `0.16.1` · Node `v24.21.0` · Linux
 > 最后更新：2026-10-25（第四次修订：R1 经对抗性 review 后重写——v1.0 **响应**适配 + 端点授权算法（同源路径作用域、跨源独立白名单 `clientCardEndpointPatterns`）+ `{id}` 参数修正 + 必要管线；默认版本 v0.3；新增 R7（卡片发现缓存，0.5.0 候选）。第三次修订 2026-10-25：R1 扩为含 v1.0 报文适配。第二次修订 2026-10-24：复核源码后纠正 R1 根因——不是探测顺序，而是客户端 URL 规范化 + method 名写死；`agent.json` 别名整项取消；R5 明确为"把不可重试变成模型可见"。第一次修订依据 `2026-10-23-tui-profile-install-investigation.md`，R2 由"待评估"改为"已验证无需修复"）
 
@@ -167,9 +167,11 @@
 - **现状**：0.4.0 的出站 message 仍是 v0.3 形状（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi / Hermes 宽容，严格 ProtoJSON v1.0 服务端会拒绝；本轮没有严格验收对象，无法证明改对/没改坏。
 - **期望**：按协商版本构造出站 message：v1.0 → `role:"ROLE_USER"`、无 `kind`、parts 用成员判别；v0.3 → 现状。响应侧已是 v1 适配，无需再改。
 - **验收**：以 0.5.0 服务端的 v1.0 模式（或独立严格 fixture）为对端，断言请求体形状；同时回归 Pi/Hermes 两条宽容链路。
-- **状态**：待评估（0.6.0 候选）
+- **状态**：进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）
 - **前置**：0.5.0（提供严格 v1.0 入口/fixture）
 - **备注**：切换出站形状会改变线上字节，必须先确认目标实现的严格程度；若只切 role/kind 不切 parts，仍可能被部分实现拒绝。
+- **验收证据**：`tests/smoke.mjs` 的「Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状」；capture 断言「A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}」与「A2aClient：v0.3 用 message/send、版本头 0.3」；`npm test` → smoke 80 + compat 59 全绿。
+- **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）
 
 ---
 
@@ -190,7 +192,7 @@
 | R5     | Round 2.5                 | 识别网关新错误码（`-32005`/`-32006` 不重试），并入 fork 包第一个版本 |
 | R6     | Round 2.5（立即可做部分） | 名字一致性文档，与 R4 一起做                  |
 | R7     | —（0.5.0 候选）           | 卡片发现的短 TTL 缓存；0.4.0 明确不做         |
-| R8     | —（0.6.0 候选）           | 出站报文按版本切换；前置严格 v1.0 验收对象    |
+| R8     | —（进行中，0.6.0）        | 出站报文按版本切换；前置严格 v1.0 验收对象    |
 
 **优先级建议**：R1 + R4 + R5 + R6 一起进 Round 2.5（fork 包的第一个版本）；R3 等 `a2a-way` Round 7 落地；R2 已关闭，只在 README 里保留运维约束。
 
