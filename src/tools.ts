@@ -17,7 +17,7 @@ import { classifyError, versionOf } from './compat.ts'
 
 // ── 输出类型（字面量 ok 判别，供 render 窄化）─────────────────────────
 
-/** 失败时统一携带的错误分类（`-32005`/`-32006` 不可重试，`-32003` 可重试）。 */
+/** 失败时统一携带的错误分类（`-32005`/`-32006` 不可重试；`-32003` 对 push 配置方法为 false，其余为 true）。 */
 interface ToolFailure {
   detail: string
   error_code?: number

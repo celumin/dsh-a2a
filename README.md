@@ -27,7 +27,7 @@ DSH（DeepSeek Harness）的 **A2A（Agent2Agent）协议**插件：既把 DSH a
 `a2a_send` / `a2a_task_status` / `a2a_cancel` 失败时输出 `error_code` 与 `retryable`：
 
 - `-32005`（call depth exceeded）/ `-32006`（outbound credential unavailable / outbound target mismatch）→ `retryable=false`
-- `-32003`（上游不可用）→ `retryable=true`
+- `-32003`（上游不可用）→ `retryable=true`；push 配置方法的 `-32003` 为 `false`（0.6.0 起按方法消歧）
 - 4xx 响应体是 JSON-RPC error 时保留原始错误码；传输层/超时统一 `-1`
 - 超时不再返回空 detail，而是 `轮询超时：最后一次看到的状态是 …, task_id=…`
 
@@ -273,7 +273,7 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 |---|---|---|
 | `-32005` | `false` | 网关环路保护（call depth exceeded） |
 | `-32006` | `false` | 出站凭据不可用 / 目标不匹配 |
-| `-32003` | `true` | 上游不可用 |
+| `-32003` | `true`（push 配置方法为 `false`） | 上游不可用；0.6.0 起按方法消歧 |
 | `-1` | `true` | 传输层错误 / 超时 / 重定向 / HTTP 状态 |
 | 其他 | 省略 | 按原错误码处理 |
 
