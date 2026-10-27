@@ -23,6 +23,7 @@ import {
   partKind,
   normalizeSendResult,
   normalizeTaskResult,
+  wireMessageFor,
   classifyError,
 } from '../lib/compat.js'
 
@@ -264,6 +265,47 @@ test('partKind：有 kind 用 kind，无 kind 按成员判别', () => {
   assert.equal(partKind({ data: {} }), 'data')
   assert.equal(partKind({ url: 'u' }), 'file')
   assert.equal(partKind({}), undefined)
+})
+
+// ── 出站报文形状（R8）────────────────────────────────────────────────
+
+test('wireMessageFor：v1.0 去 kind、role 用 ROLE_*、part 用成员形态', () => {
+  const out = wireMessageFor('v1.0', {
+    kind: 'message', role: 'user', messageId: 'm1',
+    parts: [{ kind: 'text', text: 'hi' }],
+    metadata: { kind: 'request' }, contextId: 'c1', taskId: 't1',
+  })
+  assert.deepEqual(out, {
+    role: 'ROLE_USER',
+    parts: [{ text: 'hi' }],
+    messageId: 'm1',
+    metadata: { kind: 'request' },
+    contextId: 'c1',
+    taskId: 't1',
+  })
+})
+
+test('wireMessageFor：v1.0 的 data / file part 与 agent role', () => {
+  const out = wireMessageFor('v1.0', {
+    kind: 'message', role: 'agent', messageId: 'm2',
+    parts: [{ kind: 'data', data: { a: 1 } }, { kind: 'file', file: { uri: 'file://x', mimeType: 'text/plain', name: 'x.txt' } }],
+  })
+  assert.equal(out.role, 'ROLE_AGENT')
+  assert.deepEqual(out.parts[0], { data: { a: 1 } })
+  assert.deepEqual(out.parts[1], { file: { uri: 'file://x', mimeType: 'text/plain', name: 'x.txt' } })
+  assert.equal('url' in out.parts[1].file, false)
+  assert.equal('kind' in out, false)
+})
+
+test('wireMessageFor：v0.3 与 0.5.0 的构造逐字段相同', () => {
+  const out = wireMessageFor('v0.3', {
+    kind: 'message', role: 'user', messageId: 'm3', parts: [{ kind: 'text', text: 'hi' }],
+    metadata: { kind: 'message' },
+  })
+  assert.deepEqual(out, {
+    kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'hi' }], messageId: 'm3',
+    metadata: { kind: 'message' },
+  })
 })
 
 // ── 响应归一 ───────────────────────────────────────────────────────────

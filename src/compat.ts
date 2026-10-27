@@ -132,6 +132,46 @@ function normalizePart(part: unknown): Part {
   return (kind === undefined ? part : { ...record, kind }) as Part
 }
 
+// ── 出站报文形状（R8）──────────────────────────────────────────────────
+
+/**
+ * 内部 message → 该 wire 版本的 message 对象（JSON-RPC `params.message`）。
+ *
+ * - v0.3：与 0.5.0 的构造逐字段相同（`kind:'message'`、role 小写、part 带 `kind`）。
+ * - v1.0：role 用 `ROLE_*`，message 与 part 都去掉 `kind`，part 用成员形态；
+ *   file part 只写 `{file}`，不产生 `url`。
+ * 两版都随行 `messageId` / `metadata` / `contextId` / `taskId`。
+ */
+export function wireMessageFor(version: WireVersion, message: A2aMessage): Record<string, unknown> {
+  const envelope = {
+    messageId: message.messageId,
+    ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+    ...(message.contextId !== undefined ? { contextId: message.contextId } : {}),
+    ...(message.taskId !== undefined ? { taskId: message.taskId } : {}),
+  }
+  if (version === 'v1.0') {
+    return {
+      role: message.role === 'user' ? 'ROLE_USER' : 'ROLE_AGENT',
+      parts: message.parts.map(wirePartFor),
+      ...envelope,
+    }
+  }
+  return { kind: 'message', role: message.role, parts: message.parts, ...envelope }
+}
+
+/** v1.0 part：去掉判别字段 `kind`，只留成员形态；part 级 metadata 保留。 */
+function wirePartFor(part: Part): Record<string, unknown> {
+  const metadata = part.metadata !== undefined ? { metadata: part.metadata } : {}
+  switch (part.kind) {
+    case 'text':
+      return { text: part.text, ...metadata }
+    case 'data':
+      return { data: part.data, ...metadata }
+    case 'file':
+      return { file: part.file, ...metadata }
+  }
+}
+
 // ── 响应归一 ───────────────────────────────────────────────────────────
 
 /** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态与 parts 归一）。 */

@@ -6,7 +6,7 @@
  *
  * @module dsh-a2a/compat
  */
-import type { A2aTask, AgentCard, TaskState } from './protocol.ts';
+import type { A2aMessage, A2aTask, AgentCard, TaskState } from './protocol.ts';
 /** 线上协议版本（只有大版本差异会改变方法名与报文形状）。 */
 export type WireVersion = 'v1.0' | 'v0.3';
 /** 方法表：v1.0 用 PascalCase，v0.3 用 `resource/action`。 */
@@ -43,6 +43,15 @@ export declare function normalizeState(raw: unknown): {
  * （`text` / `data` / `url`|`file`）。
  */
 export declare function partKind(part: Record<string, unknown>): 'text' | 'data' | 'file' | undefined;
+/**
+ * 内部 message → 该 wire 版本的 message 对象（JSON-RPC `params.message`）。
+ *
+ * - v0.3：与 0.5.0 的构造逐字段相同（`kind:'message'`、role 小写、part 带 `kind`）。
+ * - v1.0：role 用 `ROLE_*`，message 与 part 都去掉 `kind`，part 用成员形态；
+ *   file part 只写 `{file}`，不产生 `url`。
+ * 两版都随行 `messageId` / `metadata` / `contextId` / `taskId`。
+ */
+export declare function wireMessageFor(version: WireVersion, message: A2aMessage): Record<string, unknown>;
 /** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态与 parts 归一）。 */
 export declare function normalizeTask(raw: unknown): A2aTask;
 /** `GetTask` / `CancelTask` 的结果：裸 Task 或 `{ task }`。 */
