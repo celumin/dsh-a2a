@@ -167,10 +167,10 @@
 - **现状**：0.4.0 的出站 message 仍是 v0.3 形状（`role:"user"`、`kind:"message"`、`parts[].kind`）。Pi / Hermes 宽容，严格 ProtoJSON v1.0 服务端会拒绝；本轮没有严格验收对象，无法证明改对/没改坏。
 - **期望**：按协商版本构造出站 message：v1.0 → `role:"ROLE_USER"`、无 `kind`、parts 用成员判别；v0.3 → 现状。响应侧已是 v1 适配，无需再改。
 - **验收**：以 0.5.0 服务端的 v1.0 模式（或独立严格 fixture）为对端，断言请求体形状；同时回归 Pi/Hermes 两条宽容链路。
-- **状态**：进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）
+- **状态**：已完成（0.6.0：实现、仓库内验收与真实 Pi/Hermes 联调均完成，见设计 spec §4 矩阵 18）
 - **前置**：0.5.0（提供严格 v1.0 入口/fixture）
 - **备注**：切换出站形状会改变线上字节，必须先确认目标实现的严格程度；若只切 role/kind 不切 parts，仍可能被部分实现拒绝。
-- **验收证据**：`tests/smoke.mjs` 的「Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状」；capture 断言「A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}」与「A2aClient：v0.3 用 message/send、版本头 0.3」；`npm test` → smoke 81 + compat 61 全绿。
+- **验收证据**：`tests/smoke.mjs` 的「Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状」；capture 断言「A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}」与「A2aClient：v0.3 用 message/send、版本头 0.3」；`npm test` → smoke 81 + compat 61 全绿。**真实联调（矩阵 18，2026-10-27）**：0.6.0 客户端直连 pi-a2a be-daemon（completed，artifact 文本完整取到）与 Hermes 9900（真实 LLM 处理，`input-required` + agent 回话），两对端均接受 v1.0 出站形状（`ROLE_USER`、无 `kind`、part 成员判别），抓包与回包形状记录在 README §四「真实对端联调」。
 - **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）
 
 ---
@@ -192,7 +192,7 @@
 | R5     | Round 2.5                 | 识别网关新错误码（`-32005`/`-32006` 不重试），并入 fork 包第一个版本 |
 | R6     | Round 2.5（立即可做部分） | 名字一致性文档，与 R4 一起做                  |
 | R7     | —（0.5.0 候选）           | 卡片发现的短 TTL 缓存；0.4.0 明确不做         |
-| R8     | —（进行中，0.6.0）        | 出站报文按版本切换；前置严格 v1.0 验收对象    |
+| R8     | —（已完成，0.6.0）        | 出站报文按版本切换；矩阵 18 真实联调已完成    |
 
 **优先级建议**：R1 + R4 + R5 + R6 一起进 Round 2.5（fork 包的第一个版本）；R3 等 `a2a-way` Round 7 落地；R2 已关闭，只在 README 里保留运维约束。
 

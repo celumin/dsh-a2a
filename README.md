@@ -285,6 +285,17 @@ SSE 依次推送 `status-update(working)` → `artifact-update` → `status-upda
 
 对「消息投递型」agent（如 pi-a2a）请用 `kind=request`：`kind=message` 只入库、不触发处理，会得到空洞的成功。
 
+### 真实对端联调（R8 / 矩阵 18，2026-10-27）
+
+以 0.6.0 客户端直连真实 Pi 与 Hermes 各完成一次 `kind=request` 出站调用（脚本驱动 `lib/client.js`，与 `a2a_send` 同一代码路径；驱动脚本 `tests/live-r8.mjs`）。两条宽容链路均接受新的 v1.0 出站形状：
+
+| 对端 | 协商结果 | 出站请求体（抓包） | 对端回包 |
+| --- | --- | --- | --- |
+| pi-a2a be-daemon（`/rpc`，卡片接口条目 `1.0`） | `SendMessage`，`X-A2A-Version: 1.0` | `role:"ROLE_USER"`、无 `kind`、part 为 `{text}` 成员判别，`metadata:{kind,from}` | v1.0 task：`{task}` 信封、`status.state:"completed"`、artifact part 已归一为 `kind:"text"`；回复文本完整取到 |
+| Hermes（9900，卡片接口条目 `1.0`） | `SendMessage`，`X-A2A-Version: 1.0` | 同上 | 真实 LLM 处理，返回 task（`input-required` + `status.message` agent 回话）；`status.message` 经 M6 归一（role 小写、part 带 `kind`、message 带 `kind:'message'`） |
+
+实测注意两点：pi-a2a 广播 LAN IP，target 必须同 host（见上文「调 pi-a2a 的前置条件」）；Hermes 处理耗时可达分钟级，`clientTimeoutMs` 需相应放宽。
+
 ---
 
 ## 五、服务端：v1.0 兼容（0.5.0 新增）
