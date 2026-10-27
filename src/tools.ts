@@ -54,7 +54,7 @@ interface CancelFail extends ToolFailure { ok: false }
 function failure(error: unknown): ToolFailure {
   const detail = error instanceof Error ? error.message : String(error)
   if (error instanceof A2aRpcError) {
-    return { detail, error_code: error.code, ...classifyError(error.code) }
+    return { detail, error_code: error.code, ...classifyError(error.code, error.method) }
   }
   return { detail }
 }
@@ -62,7 +62,7 @@ function failure(error: unknown): ToolFailure {
 const FAILURE_PROPS = {
   detail: { type: 'string' },
   error_code: { type: 'number', description: '远端 JSON-RPC 错误码；传输层错误为 -1' },
-  retryable: { type: 'boolean', description: '是否鼓励重试：-32005/-32006 为 false，-32003 为 true' },
+  retryable: { type: 'boolean', description: '是否鼓励重试：-32005/-32006 为 false；-32003 对 push 配置方法为 false，其余为 true' },
 } as const
 
 /** 把任务快照渲染成给模型看的一段简报文本。 */

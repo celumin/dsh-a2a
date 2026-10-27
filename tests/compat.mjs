@@ -344,6 +344,32 @@ test('normalizeTaskResult：裸 task 与 {task} 都接受', () => {
   assert.equal(normalizeTaskResult({ task: { id: 'b', contextId: 'c', status: { state: 'completed' } } }).id, 'b')
 })
 
+test('normalizeTaskResult：v1 message 归一（role/kind/parts），v0.3 幂等', () => {
+  const v1 = normalizeTaskResult({
+    id: 't1', contextId: 'c1',
+    status: {
+      state: 'TASK_STATE_INPUT_REQUIRED', timestamp: '2026-01-01T00:00:00Z',
+      message: { role: 'ROLE_AGENT', parts: [{ text: 'need' }], messageId: 'm0' },
+    },
+    history: [{ role: 'ROLE_USER', parts: [{ text: 'q' }], messageId: 'm1' }],
+  })
+  assert.equal(v1.status.message.role, 'agent')
+  assert.equal(v1.status.message.kind, 'message')
+  assert.deepEqual(v1.status.message.parts, [{ kind: 'text', text: 'need' }])
+  assert.equal(v1.history[0].role, 'user')
+  assert.equal(v1.history[0].kind, 'message')
+  assert.equal(v1.history[0].parts[0].kind, 'text')
+
+  const v03 = normalizeTaskResult({
+    kind: 'task', id: 't2', contextId: 'c2',
+    status: { state: 'completed', timestamp: '2026-01-01T00:00:00Z' },
+    history: [{ kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'q' }], messageId: 'm' }],
+  })
+  assert.deepEqual(v03.history[0], {
+    kind: 'message', role: 'user', parts: [{ kind: 'text', text: 'q' }], messageId: 'm',
+  })
+})
+
 // ── 错误分类 ───────────────────────────────────────────────────────────
 
 test('classifyError：策略拒绝不可重试', () => {
@@ -353,6 +379,14 @@ test('classifyError：策略拒绝不可重试', () => {
 
 test('classifyError：上游不可用可重试', () => {
   assert.deepEqual(classifyError(-32003), { retryable: true })
+})
+
+test('classifyError：-32003 按方法消歧（push 配置不可重试）', () => {
+  assert.deepEqual(classifyError(-32003), { retryable: true })
+  assert.deepEqual(classifyError(-32003, 'message/send'), { retryable: true })
+  assert.deepEqual(classifyError(-32003, 'CreateTaskPushNotificationConfig'), { retryable: false })
+  assert.deepEqual(classifyError(-32003, 'tasks/pushNotificationConfig/set'), { retryable: false })
+  assert.deepEqual(classifyError(-32005, 'CreateTaskPushNotificationConfig'), { retryable: false })
 })
 
 test('classifyError：传输层/超时（-1）可重试', () => {

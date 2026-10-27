@@ -8,6 +8,7 @@
  */
 
 import type { A2aMessage, A2aTask, AgentCard, Artifact, Part, TaskState } from './protocol.ts'
+import { isPushConfigMethod } from './protocol.ts'
 
 /** 线上协议版本（只有大版本差异会改变方法名与报文形状）。 */
 export type WireVersion = 'v1.0' | 'v0.3'
@@ -174,7 +175,28 @@ function wirePartFor(part: Part): Record<string, unknown> {
 
 // ── 响应归一 ───────────────────────────────────────────────────────────
 
-/** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态与 parts 归一）。 */
+/**
+ * v1.0 的 message → 内部 shape（0.6.0 spec §3.8）：role 小写、part 带 `kind`、
+ * message 带 `kind:'message'`；未知 role 原样保留（不猜）。非对象 → undefined。
+ * 对 v0.3 输入幂等。
+ */
+function normalizeMessage(raw: unknown): A2aMessage | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const record = raw as Record<string, unknown>
+  const role = record['role']
+  const normalizedRole = role === 'ROLE_USER' || role === 'user'
+    ? 'user'
+    : role === 'ROLE_AGENT' || role === 'agent'
+      ? 'agent'
+      : (role as A2aMessage['role'])
+  const rawParts = record['parts']
+  const parts = Array.isArray(rawParts)
+    ? rawParts.map(normalizePart).filter((part) => part !== null && typeof part === 'object')
+    : []
+  return { ...record, kind: 'message', role: normalizedRole, parts } as unknown as A2aMessage
+}
+
+/** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态、message 与 parts 归一）。 */
 export function normalizeTask(raw: unknown): A2aTask {
   if (raw === null || typeof raw !== 'object') {
     throw new Error('invalid A2A task response')
@@ -194,15 +216,28 @@ export function normalizeTask(raw: unknown): A2aTask {
         : [],
     })) as unknown as readonly Artifact[]
     : undefined
+  // status.message：v1 形状归一；非对象 → 删掉该键（不返回 {} 这种非法 Message）。
+  const statusOut: Record<string, unknown> = {
+    ...status,
+    state: normalized.state,
+    ...(normalized.rawState !== undefined ? { rawState: normalized.rawState } : {}),
+  }
+  if ('message' in statusOut) {
+    const message = normalizeMessage(statusOut['message'])
+    if (message === undefined) delete statusOut['message']
+    else statusOut['message'] = message
+  }
+  // history：数组才归一；不是数组时保持现状（不凭空造 []）。
+  const rawHistory = task['history']
+  const history = Array.isArray(rawHistory)
+    ? rawHistory.map(normalizeMessage).filter((message): message is A2aMessage => message !== undefined)
+    : undefined
   return {
     ...(task as unknown as A2aTask),
     kind: 'task',
-    status: {
-      ...(status as unknown as A2aTask['status']),
-      state: normalized.state,
-      ...(normalized.rawState !== undefined ? { rawState: normalized.rawState } : {}),
-    },
+    status: statusOut as unknown as A2aTask['status'],
     ...(artifacts !== undefined ? { artifacts } : {}),
+    ...(history !== undefined ? { history } : {}),
   }
 }
 
@@ -248,11 +283,12 @@ function messageToTask(raw: unknown, contextId: string): A2aTask {
 
 /**
  * 网关错误码 → 是否鼓励重试。`-32005`（环路）/ `-32006`（注入被拒）不可重试；
- * `-32003`（上游不可用）可重试；其他不表态（两个字段都省略）。
+ * `-32003` 按方法消歧：push 配置不可重试（PUSH_NOTIFICATION_NOT_SUPPORTED），
+ * 其余保持"上游不可用可重试"（网关语义）；其他不表态（两个字段都省略）。
  */
-export function classifyError(code: number): { retryable?: boolean } {
+export function classifyError(code: number, method?: string): { retryable?: boolean } {
   if (code === -32005 || code === -32006) return { retryable: false }
-  if (code === -32003) return { retryable: true }
+  if (code === -32003) return { retryable: !isPushConfigMethod(method) }
   // -1 是客户端侧统一码：传输错误、超时、重定向、HTTP 状态。这些都可以重试。
   if (code === -1) return { retryable: true }
   return {}

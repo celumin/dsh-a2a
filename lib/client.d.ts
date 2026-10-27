@@ -48,7 +48,8 @@ export type A2aOutboundKind = 'message' | 'request' | 'result';
 export declare class A2aRpcError extends Error {
     readonly code: number;
     readonly data?: unknown | undefined;
-    constructor(code: number, message: string, data?: unknown | undefined);
+    readonly method?: string | undefined;
+    constructor(code: number, message: string, data?: unknown | undefined, method?: string | undefined);
 }
 /** 轮询到总预算仍未结束：携带最后状态，便于模型判断是 agent 卡住还是客户端不认识状态。 */
 export declare class A2aTimeoutError extends A2aRpcError {

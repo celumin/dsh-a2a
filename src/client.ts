@@ -35,6 +35,7 @@ import {
   methodsFor,
   negotiateVersion,
   normalizeSendResult,
+  normalizeTask,
   normalizeTaskResult,
   versionHeader,
   wireMessageFor,
@@ -79,6 +80,7 @@ export class A2aRpcError extends Error {
     readonly code: number,
     message: string,
     readonly data?: unknown,
+    readonly method?: string,
   ) {
     super(`远端 A2A 返回错误 ${code}: ${message}`)
     this.name = 'A2aRpcError'
@@ -169,13 +171,13 @@ export class A2aClient {
     const text = await response.text().catch(() => '')
     if (!response.ok) {
       const rpcError = rpcErrorOf(parseJson(text))
-      if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data)
+      if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data, method)
       throw new A2aRpcError(-1, `HTTP ${response.status} ${truncateBody(text)}`)
     }
     const payload = parseJson(text)
     if (payload === undefined) throw new A2aRpcError(-1, 'invalid JSON-RPC response')
     const rpcError = rpcErrorOf(payload)
-    if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data)
+    if (rpcError !== undefined) throw new A2aRpcError(rpcError.code, rpcError.message, rpcError.data, method)
     return (payload as { result?: unknown }).result as T
   }
 
@@ -384,9 +386,9 @@ export class A2aClient {
       // 对端退化为同步 JSON-RPC 响应：读取任务并按 send() 语义补齐。
       const payload = (await response.json()) as JsonRpcResponse
       if ('error' in payload) {
-        throw new A2aRpcError(payload.error.code, payload.error.message, payload.error.data)
+        throw new A2aRpcError(payload.error.code, payload.error.message, payload.error.data, methodsFor(version).stream)
       }
-      const task = payload.result as A2aTask
+      const task = normalizeTask(payload.result)
       onEvent({
         kind: 'status-update',
         taskId: task.id,
@@ -418,7 +420,7 @@ export class A2aClient {
         if (data === '') continue
         const payload = JSON.parse(data) as JsonRpcResponse
         if ('error' in payload) {
-          throw new A2aRpcError(payload.error.code, payload.error.message, payload.error.data)
+          throw new A2aRpcError(payload.error.code, payload.error.message, payload.error.data, methodsFor(version).stream)
         }
         const event = payload.result as TaskEvent
         if (event === null || typeof event !== 'object' || event.kind === undefined) continue

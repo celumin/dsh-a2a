@@ -52,7 +52,7 @@ export declare function partKind(part: Record<string, unknown>): 'text' | 'data'
  * 两版都随行 `messageId` / `metadata` / `contextId` / `taskId`。
  */
 export declare function wireMessageFor(version: WireVersion, message: A2aMessage): Record<string, unknown>;
-/** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态与 parts 归一）。 */
+/** v0.3 裸 Task / v1.0 `{ task }` → 内部 Task（状态、message 与 parts 归一）。 */
 export declare function normalizeTask(raw: unknown): A2aTask;
 /** `GetTask` / `CancelTask` 的结果：裸 Task 或 `{ task }`。 */
 export declare function normalizeTaskResult(raw: unknown): A2aTask;
@@ -63,9 +63,10 @@ export declare function normalizeTaskResult(raw: unknown): A2aTask;
 export declare function normalizeSendResult(raw: unknown, contextId: string): A2aTask;
 /**
  * 网关错误码 → 是否鼓励重试。`-32005`（环路）/ `-32006`（注入被拒）不可重试；
- * `-32003`（上游不可用）可重试；其他不表态（两个字段都省略）。
+ * `-32003` 按方法消歧：push 配置不可重试（PUSH_NOTIFICATION_NOT_SUPPORTED），
+ * 其余保持"上游不可用可重试"（网关语义）；其他不表态（两个字段都省略）。
  */
-export declare function classifyError(code: number): {
+export declare function classifyError(code: number, method?: string): {
     retryable?: boolean;
 };
 //# sourceMappingURL=compat.d.ts.map

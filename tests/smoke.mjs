@@ -1343,6 +1343,59 @@ const main = async () => {
     assert.deepEqual(withMeta.result.history[0].metadata, { kind: 'request', from: 'tester' })
   })
 
+  await test('Round 2.6：v1 响应 history/status.message 归一成内部形状', async () => {
+    // status.message 只在 failed/timeout 由服务器写入（agentNote）；input-required 分支
+    // 只写 artifact，所以这里必须用"必然抛错"的 runner，否则 status.message 是 undefined。
+    const failing = await startServer({ runner: { async run() { throw new Error('boom') } } })
+    const strict = await startStrictV1(failing.url)
+    try {
+      const client = new A2aClient({ baseUrl: strict.origin, timeoutMs: 5000 })
+      const { task } = await client.sendForText('boom')
+      assert.equal(task.status.state, 'failed')
+      assert.equal(task.status.message.role, 'agent')
+      assert.equal(task.status.message.kind, 'message')
+      assert.equal(task.status.message.parts[0].kind, 'text')
+      assert.equal(task.history[0].role, 'user')
+      assert.equal(task.history[0].kind, 'message')
+      assert.equal(task.history[0].parts[0].kind, 'text')
+    } finally {
+      await strict.close()
+      await failing.server.stop()
+    }
+  })
+
+  await test('Round 2.6：sendStream 的非 SSE 回退也走 normalizeTask', async () => {
+    const agent = await startAgent({ ...v03Card, capabilities: { streaming: true } }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, {
+        task: { id: 't1', contextId: 'c1', status: { state: 'TASK_STATE_COMPLETED' }, artifacts: [{ parts: [{ text: 'ok' }] }] },
+      })))
+    })
+    try {
+      const c = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      const events = await c.sendStream('x', () => {})
+      assert.equal(events[events.length - 1].status.state, 'completed')
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('Round 2.6：JSON-RPC 错误对象携带方法名', async () => {
+    const agent = await startAgent(v10Card, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32003, message: 'push not supported' } }))
+    })
+    try {
+      const c = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await assert.rejects(
+        () => c.sendForText('x'),
+        (e) => e.code === -32003 && e.method === 'SendMessage',
+      )
+    } finally {
+      await agent.close()
+    }
+  })
+
   await openServer.server.stop()
 
   // ── Bearer 鉴权服务器 ─────────────────────────────────────────────
