@@ -248,6 +248,57 @@ async function startAgent(card, onRpc) {
   return { ...srv, calls }
 }
 
+/**
+ * 严格 v1.0 验收对端：只有 message/part 的 v1 形状才放行，否则回 -32602；
+ * 通过后把原始请求转发给真实 A2aServer（serverUrl），响应原样回传。
+ * 只存在于测试，不进生产代码。
+ */
+async function startStrictV1(serverUrl) {
+  const violations = []
+  let validated = 0
+  const server = createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        name: 'strict-v1', version: '1.0.0',
+        capabilities: { streaming: false }, skills: [],
+        supportedInterfaces: [{ url: `http://127.0.0.1:${server.address().port}/`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' }],
+      }))
+      return
+    }
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', async () => {
+      const parsed = JSON.parse(body)
+      const m = parsed?.params?.message ?? {}
+      if (m.role !== 'ROLE_USER' && m.role !== 'ROLE_AGENT') violations.push('role')
+      if ('kind' in m) violations.push('message.kind')
+      if (!Array.isArray(m.parts) || m.parts.length === 0) violations.push('parts')
+      for (const p of m.parts ?? []) {
+        if ('kind' in p) violations.push('part.kind')
+        if (['text', 'data', 'file'].filter((k) => k in p).length !== 1) violations.push('part.members')
+      }
+      if (violations.length > 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, error: { code: -32602, message: 'strict v1: invalid params' } }))
+        return
+      }
+      validated += 1
+      const forwarded = await fetch(serverUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      const text = await forwarded.text()
+      res.writeHead(forwarded.status, { 'Content-Type': 'application/json' })
+      res.end(text)
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    get validated() { return validated },
+    violations,
+    close: () => new Promise((r) => server.close(r)),
+  }
+}
+
 function completedTask() {
   return {
     kind: 'task',
@@ -1188,6 +1239,20 @@ const main = async () => {
     const card = await response.json()
     assert.equal(card.protocolVersion, '0.3.0')
     assert.deepEqual(card.protocolVersions, ['0.3.0'])
+  })
+
+  await test('Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状', async () => {
+    const strict = await startStrictV1(rpc)   // rpc = openServer.url
+    try {
+      const client = new A2aClient({ baseUrl: strict.origin, timeoutMs: 5000 })
+      const { task, text } = await client.sendForText('strict v1', { preferStream: false })
+      assert.equal(strict.violations.length, 0, `strict 违约：${strict.violations.join(',')}`)
+      assert.equal(strict.validated, 1)
+      assert.equal(task.status.state, 'completed')
+      assert.match(text, /^echo: strict v1/)
+    } finally {
+      await strict.close()
+    }
   })
 
   await openServer.server.stop()
