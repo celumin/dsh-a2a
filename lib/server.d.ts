@@ -33,14 +33,17 @@ import type { A2aMessage, AgentCard } from './protocol.ts';
 import type { TaskController } from './store.ts';
 /**
  * JSON-RPC 路由真值表（0.6.0 spec §3.3）：v0.3 名字与 v1.0 名字共用同一
- * handler；`v1` 决定出站包装形状。v0.3 的 push `/list` `/delete` **刻意
- * 不在表里**——它们从未实现，今天走 default → -32601，加进来会变成 -32003。
+ * handler；`v1` 决定出站包装形状，由 `wireVersionFor` 派生（不手写布尔）。
+ * v0.3 的 push `/list` `/delete` **刻意不在表里**——它们从未实现，今天走
+ * default → -32601，加进来会变成 -32003。
  * 导出是为了让测试枚举真值，不是公开 API。
+ * @internal
  */
 export interface RpcRoute {
     readonly handler: 'send' | 'getTask' | 'cancel' | 'pushConfig';
     readonly v1: boolean;
 }
+/** @internal 测试据此枚举方法名真值，生产分发也用它。 */
 export declare const RPC_ROUTES: Readonly<Record<string, RpcRoute>>;
 /** 任务 runner 入参：controller 驱动状态机，message 为本轮用户消息。 */
 export interface RunnerInput {

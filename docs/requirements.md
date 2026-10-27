@@ -170,7 +170,7 @@
 - **状态**：进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）
 - **前置**：0.5.0（提供严格 v1.0 入口/fixture）
 - **备注**：切换出站形状会改变线上字节，必须先确认目标实现的严格程度；若只切 role/kind 不切 parts，仍可能被部分实现拒绝。
-- **验收证据**：`tests/smoke.mjs` 的「Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状」；capture 断言「A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}」与「A2aClient：v0.3 用 message/send、版本头 0.3」；`npm test` → smoke 80 + compat 59 全绿。
+- **验收证据**：`tests/smoke.mjs` 的「Round 2.6：严格 v1 对端（0.5.0 服务端 + strict proxy）接受出站形状」；capture 断言「A2aClient：v1.0 用 SendMessage、版本头 1.0、解包 {task}」与「A2aClient：v0.3 用 message/send、版本头 0.3」；`npm test` → smoke 81 + compat 61 全绿。
 - **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）
 
 ---

@@ -23,7 +23,7 @@
 import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
 import { A2aServer, RPC_ROUTES, silentLogger } from '../lib/server.js'
-import { buildAgentCard, V1_METHOD_NAMES, V1_ALIASES, PUSH_CONFIG_METHOD_NAMES, isV1Method } from '../lib/protocol.js'
+import { buildAgentCard, V1_METHOD_NAMES, V1_ALIASES, PUSH_CONFIG_METHOD_NAMES, isV1Method, wireVersionFor } from '../lib/protocol.js'
 import { A2aClient, A2aTimeoutError, matchesAllowlist } from '../lib/client.js'
 
 // ── 测试基础设施 ────────────────────────────────────────────────────────
@@ -271,7 +271,7 @@ async function startStrictV1(serverUrl) {
     req.on('end', async () => {
       const parsed = JSON.parse(body)
       const m = parsed?.params?.message ?? {}
-      if (m.role !== 'ROLE_USER' && m.role !== 'ROLE_AGENT') violations.push('role')
+      if (m.role !== 'ROLE_USER') violations.push('role')
       if ('kind' in m) violations.push('message.kind')
       if (!Array.isArray(m.parts) || m.parts.length === 0) violations.push('parts')
       for (const p of m.parts ?? []) {
@@ -1255,6 +1255,22 @@ const main = async () => {
     }
   })
 
+  await test('Round 2.6：strict proxy 拒绝 ROLE_AGENT 的出站请求', async () => {
+    const strict = await startStrictV1(rpc)
+    try {
+      const { response } = await post(strict.origin, {
+        jsonrpc: '2.0', id: 'role', method: 'SendMessage',
+        params: { message: { role: 'ROLE_AGENT', parts: [{ text: 'x' }], messageId: 'm' } },
+      })
+      const payload = await response.json()
+      assert.equal(payload.error.code, -32602)
+      assert.ok(strict.violations.includes('role'), strict.violations.join(','))
+      assert.equal(strict.validated, 0)
+    } finally {
+      await strict.close()
+    }
+  })
+
   await test('Round 2.6：未实现的 v1 名字 -32601 但响应头是 1.0', async () => {
     for (const method of ['ListTasks', 'SubscribeToTask', 'GetExtendedAgentCard', 'SendStreamingMessage']) {
       const { response } = await post(rpc, { jsonrpc: '2.0', id: 1, method }, { 'X-A2A-Version': '1.0' })
@@ -1296,6 +1312,8 @@ const main = async () => {
       assert.notEqual(RPC_ROUTES[alias].handler, 'pushConfig', alias)
     }
     for (const [method, route] of Object.entries(RPC_ROUTES)) {
+      // v1 标志必须与名字真值一致（由 wireVersionFor 派生，不是手写布尔）。
+      assert.equal(route.v1, wireVersionFor(method) === '1.0', method)
       if (route.v1) assert.equal(V1_METHOD_NAMES.includes(method), true, method)
       if (route.handler === 'pushConfig') assert.equal(route.v1, V1_METHOD_NAMES.includes(method), method)
     }

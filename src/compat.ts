@@ -153,15 +153,18 @@ export function wireMessageFor(version: WireVersion, message: A2aMessage): Recor
   if (version === 'v1.0') {
     return {
       role: message.role === 'user' ? 'ROLE_USER' : 'ROLE_AGENT',
-      parts: message.parts.map(wirePartFor),
+      parts: message.parts.map(wirePartFor).filter((part): part is Record<string, unknown> => part !== undefined),
       ...envelope,
     }
   }
   return { kind: 'message', role: message.role, parts: message.parts, ...envelope }
 }
 
-/** v1.0 part：去掉判别字段 `kind`，只留成员形态；part 级 metadata 保留。 */
-function wirePartFor(part: Part): Record<string, unknown> {
+/**
+ * v1.0 part：去掉判别字段 `kind`，只留成员形态；part 级 metadata 保留。
+ * 未知 kind 返回 undefined（调用方过滤掉，避免线上下发 `null` part）。
+ */
+function wirePartFor(part: Part): Record<string, unknown> | undefined {
   const metadata = part.metadata !== undefined ? { metadata: part.metadata } : {}
   switch (part.kind) {
     case 'text':
@@ -170,6 +173,8 @@ function wirePartFor(part: Part): Record<string, unknown> {
       return { data: part.data, ...metadata }
     case 'file':
       return { file: part.file, ...metadata }
+    default:
+      return undefined
   }
 }
 

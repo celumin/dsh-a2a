@@ -243,7 +243,10 @@ export declare const V1_METHOD_NAMES: readonly string[];
  * 它们只借 v1 名字的响应头，处理仍走 pushConfig 分支（-32003）。
  */
 export declare const V1_ALIASES: ReadonlySet<string>;
-/** 请求方法名是否属于 v1.0 别名集合（决定是否走别名分发，不决定响应头）。 */
+/**
+ * 请求方法名是否属于 v1.0 别名集合（决定是否走别名分发，不决定响应头）。
+ * 公开 API（spec §3.3）；服务端分发以 `RPC_ROUTES.v1` 为准。
+ */
 export declare function isV1Method(method: string): boolean;
 /**
  * 推送通知配置方法全集（v0.3 的 4 个前缀名 + v1 的 4 个名字）：错误分类用它

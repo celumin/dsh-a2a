@@ -65,28 +65,37 @@ const SSE_HEARTBEAT_MS = 15_000
 
 /**
  * JSON-RPC 路由真值表（0.6.0 spec §3.3）：v0.3 名字与 v1.0 名字共用同一
- * handler；`v1` 决定出站包装形状。v0.3 的 push `/list` `/delete` **刻意
- * 不在表里**——它们从未实现，今天走 default → -32601，加进来会变成 -32003。
+ * handler；`v1` 决定出站包装形状，由 `wireVersionFor` 派生（不手写布尔）。
+ * v0.3 的 push `/list` `/delete` **刻意不在表里**——它们从未实现，今天走
+ * default → -32601，加进来会变成 -32003。
  * 导出是为了让测试枚举真值，不是公开 API。
+ * @internal
  */
 export interface RpcRoute {
   readonly handler: 'send' | 'getTask' | 'cancel' | 'pushConfig'
   readonly v1: boolean
 }
 
+/** @internal 路由条目的构造器：`v1` 只由方法名真值决定。 */
+const routeFor = (handler: RpcRoute['handler'], method: string): RpcRoute => ({
+  handler,
+  v1: wireVersionFor(method) === '1.0',
+})
+
+/** @internal 测试据此枚举方法名真值，生产分发也用它。 */
 export const RPC_ROUTES: Readonly<Record<string, RpcRoute>> = {
-  'message/send': { handler: 'send', v1: false },
-  SendMessage: { handler: 'send', v1: true },
-  'tasks/get': { handler: 'getTask', v1: false },
-  GetTask: { handler: 'getTask', v1: true },
-  'tasks/cancel': { handler: 'cancel', v1: false },
-  CancelTask: { handler: 'cancel', v1: true },
-  'tasks/pushNotificationConfig/set': { handler: 'pushConfig', v1: false },
-  'tasks/pushNotificationConfig/get': { handler: 'pushConfig', v1: false },
-  CreateTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
-  GetTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
-  ListTaskPushNotificationConfigs: { handler: 'pushConfig', v1: true },
-  DeleteTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
+  'message/send': routeFor('send', 'message/send'),
+  SendMessage: routeFor('send', 'SendMessage'),
+  'tasks/get': routeFor('getTask', 'tasks/get'),
+  GetTask: routeFor('getTask', 'GetTask'),
+  'tasks/cancel': routeFor('cancel', 'tasks/cancel'),
+  CancelTask: routeFor('cancel', 'CancelTask'),
+  'tasks/pushNotificationConfig/set': routeFor('pushConfig', 'tasks/pushNotificationConfig/set'),
+  'tasks/pushNotificationConfig/get': routeFor('pushConfig', 'tasks/pushNotificationConfig/get'),
+  CreateTaskPushNotificationConfig: routeFor('pushConfig', 'CreateTaskPushNotificationConfig'),
+  GetTaskPushNotificationConfig: routeFor('pushConfig', 'GetTaskPushNotificationConfig'),
+  ListTaskPushNotificationConfigs: routeFor('pushConfig', 'ListTaskPushNotificationConfigs'),
+  DeleteTaskPushNotificationConfig: routeFor('pushConfig', 'DeleteTaskPushNotificationConfig'),
 }
 
 /** 任务 runner 入参：controller 驱动状态机，message 为本轮用户消息。 */

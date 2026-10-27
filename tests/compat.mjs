@@ -317,6 +317,15 @@ test('wireMessageFor：v0.3 与 0.5.0 的构造逐字段相同', () => {
   })
 })
 
+test('wireMessageFor：v1.0 省略未知 kind 的 part（不产出 null）', () => {
+  const out = wireMessageFor('v1.0', {
+    kind: 'message', role: 'user', messageId: 'm4',
+    parts: [{ kind: 'video', text: 'x' }, { kind: 'text', text: 'ok' }],
+  })
+  assert.deepEqual(out.parts, [{ text: 'ok' }])
+  assert.equal(JSON.stringify(out.parts).includes('null'), false)
+})
+
 // ── 响应归一 ───────────────────────────────────────────────────────────
 
 test('normalizeSendResult：{task} 解包', () => {
@@ -616,6 +625,22 @@ test('toV1Task：part 二分支（显式未知 kind 省略；缺 kind 按成员�
     }],
   })
   assert.deepEqual(out.history[0].parts, [{ text: 'ok' }, { data: { a: 1 } }])
+})
+
+test('toV1Task：显式 kind 但缺载荷 / 载荷类型不符 → 省略该 part', () => {
+  const out = toV1Task({
+    kind: 'task', id: 't1', contextId: 'c1', status: { state: 'completed' },
+    history: [{
+      role: 'user', messageId: 'm',
+      parts: [
+        { kind: 'text' }, { kind: 'text', text: 42 },
+        { kind: 'data' }, { kind: 'data', data: [] },
+        { kind: 'file' }, { kind: 'file', file: 'x' },
+        { kind: 'text', text: 'ok' },
+      ],
+    }],
+  })
+  assert.deepEqual(out.history[0].parts, [{ text: 'ok' }])
 })
 
 test('checkVersionHeader：空头等价没带，非空 X 优先，其余主版本拒绝', () => {
