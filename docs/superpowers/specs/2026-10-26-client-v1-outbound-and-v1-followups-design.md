@@ -6,7 +6,10 @@
 > 需求来源：`docs/requirements.md` R8（0.6.0 候选）；0.5.0 分支终审的 deferred minors
 > 关联：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（0.5.0，已发布）、`docs/debug/A2A_pi_agent_communication.md`（真实 v1.0 wire 抓包）
 > 证据基线：`@celumin/dsh-a2a@0.5.0` 已发布 = tag `v0.5.0` @ `e1a1b18`（npm dist-tag `latest`；用 `git ls-remote --tags fork` 核对，clone 的本地 tag 可能不同步）；本轮改动起点 `cd82893`。
-> 评审报告（随本版提交）：`docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（第一轮 4×P1 / 6×P2；v3 吸收全部，v4 吸收两条越界 M6/M7）、`...-2026-10-27-...-review-r2.md`（第二轮 2×P1 / 2×P2；v5 吸收）、`...-2026-10-27-...-review-r3.md`（第三轮 0×P1 / 4×P2，结论"可以进计划"；v6 吸收）。
+> 评审报告（随本版提交）：
+> - `docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（第一轮 4×P1 / 6×P2；v3 吸收全部，v4 吸收两条越界 M6/M7）
+> - `docs/superpowers/reviews/specs/2026-10-27-client-v1-outbound-and-v1-followups-review-r2.md`（第二轮 2×P1 / 2×P2；v5 吸收）
+> - `docs/superpowers/reviews/specs/2026-10-27-client-v1-outbound-and-v1-followups-review-r3.md`（第三轮 0×P1 / 4×P2，结论"可以进计划"；v6 吸收）
 
 ## 1. 背景
 

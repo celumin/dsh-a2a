@@ -1,14 +1,14 @@
-# dsh-a2a 0.6.0 实施计划（出站报文按版本切换 + 0.5.0 遗留修复）
+# dsh-a2a 0.6.0 实施计划（R8 出站按版本切换 + 遗留修复 M1–M7）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 出站 message 形状跟随协商版本（v1.0 → ProtoJSON 形状，v0.3 逐字节不变），并用严格验收对象证明；同时修掉 0.5.0 终审遗留与 spec review 越界项（M1–M7）。
 
-**Architecture:** 版本适配仍是纯函数：`compat.ts` 新增 `wireMessageFor(version, message)`，`client.ts` 的 `send`/`sendStream` 两处字面量改为调用它，`sendStream` 在 v1.0 上提前报错。服务端做三处收敛：v1 方法名真值收敛为 `protocol.ts` 的 `V1_METHOD_NAMES`/`V1_ALIASES` + `server.ts` 的**导出**路由表（含 push-notification-config 家族）；版本门抽成纯函数 `checkVersionHeader(x, a)`；`toV1Task` 加运行期兜底。strict v1 验收对象是**测试内联 proxy**（校验 v1 形状后才转发给真实 0.5.0 服务端），不进生产代码。
+**Architecture:** 版本适配仍是纯函数：`compat.ts` 新增 `wireMessageFor(version, message)`，`client.ts` 的 `send`/`sendStream` 两处字面量改为调用它，`sendStream` 在 v1.0 上提前报错。服务端收敛真值：`protocol.ts` 的 `V1_METHOD_NAMES`/`V1_ALIASES`/`PUSH_CONFIG_METHOD_NAMES` + `server.ts` 的**导出**路由表；版本门抽成 `checkVersionHeader(x, a)`；`toV1Task` 加结构性兜底；`compat.ts` 补 v1 响应 message 归一（M6）与 `-32003` 按方法消歧（M7，`A2aRpcError` 携带 `method`）。strict v1 验收对象是**测试内联 proxy**（校验 v1 形状后才转发给真实 0.5.0 服务端），不进生产代码。
 
 **Tech Stack:** TypeScript 5.9（ESM）、Node ≥20、`node:assert` 手写测试、`node:http`（测试内联严格 proxy）、零新增依赖。
 
-**Spec:** `docs/superpowers/specs/2026-10-26-client-v1-outbound-and-v1-followups-design.md`（定稿 v3，已吸收 spec review）
+**Spec:** `docs/superpowers/specs/2026-10-26-client-v1-outbound-and-v1-followups-design.md`（定稿 v6，三轮 spec review 后冻结）
 
 ## Global Constraints
 
@@ -459,7 +459,7 @@ git commit -m "fix(server): single v1 method-name table incl. push-config family
 
 - [ ] **Step 1: 写失败测试**
 
-`tests/compat.mjs`：
+`tests/compat.mjs`（从 `../lib/protocol.js` 补导入 `checkVersionHeader`）：
 
 ```js
 test('toV1Task：结构性非法输入不抛、不产 null、status 有 state', () => {
@@ -711,7 +711,7 @@ await test('Round 2.6：JSON-RPC 错误对象携带方法名', async () => {
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npm test`
-Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `undefined`；`classifyError(-32003, push)` 仍 `true`）；smoke 两条 FAIL（`status.message.role === 'ROLE_AGENT'`、`err.method === undefined`）
+Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `undefined`；`classifyError(-32003, push)` 仍 `true`）；smoke **三条** FAIL（`status.message.role === 'ROLE_AGENT'`、回退事件的 state 仍是 `TASK_STATE_COMPLETED`、`err.method === undefined`）
 
 - [ ] **Step 3: 实现**
 
@@ -724,9 +724,7 @@ Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `un
 - 返回 `{ ...raw, kind: 'message', role, parts }`。
 `normalizeTask`：`status.message` 存在 → 用 `normalizeMessage` 归一（`undefined` 则删掉该键）；`history` 数组 → `map(normalizeMessage).filter(Boolean)`；`history` 非数组 → 保持现状。
 
-`client.ts`：`A2aRpcError` 构造器加第 4 个可选参 `method`；`rpc()` 里两处 JSON-RPC 错误抛出（`rpcError !== undefined`）带 `method`；`sendStream` 两处 JSON-RPC 错误带 `methodsFor(version).stream`。
-
-`client.ts`：`sendStream` 的非 SSE 回退分支把 `payload.result as A2aTask` 改成 `normalizeTask(payload.result)`（`normalizeTask` 从 compat 引入）。
+`client.ts`：`A2aRpcError` 构造器加第 4 个可选参 `method`；`rpc()` 里两处 JSON-RPC 错误抛出（`rpcError !== undefined`）带 `method`；`sendStream` 两处 JSON-RPC 错误带 `methodsFor(version).stream`；`sendStream` 的非 SSE 回退分支把 `payload.result as A2aTask` 改成 `normalizeTask(payload.result)`（`normalizeTask` 从 compat 引入）。
 
 `tools.ts`：`failure(error)` 用 `classifyError(error.code, error.method)`；`retryable` 描述改成「是否鼓励重试：`-32005`/`-32006` 为 false；`-32003` 对 push 配置方法为 false，其余为 true」。
 
@@ -738,7 +736,7 @@ Expected: PASS（smoke 80 + compat 59）
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/compat.ts src/protocol.ts src/client.ts src/tools.ts tests/compat.mjs tests/smoke.mjs lib
+git add src/compat.ts src/client.ts src/tools.ts tests/compat.mjs tests/smoke.mjs lib
 git commit -m "fix(compat): normalize v1 response messages and disambiguate -32003 by method"
 ```
 
@@ -759,6 +757,7 @@ git commit -m "fix(compat): normalize v1 response messages and disambiguate -320
 - **§五（现有 `:279`）**："出站客户端行为不变（仍是 v0.3 形状…）" → "出站形状随协商版本切换（0.6.0，见 §四）"。
 - **§五（现有 `:300`）**："0.5.0 的 v1.0 入口…**可用于** 0.6.0…" → "该入口即 strict fixture 的生产侧；回归用例是 `tests/smoke.mjs` 的 strict proxy 用例"。
 - §六 已知限制第 1 条：改为"出站形状随协商版本切换（0.6.0）；卡片错标 1.0 但只吃 v0.3 形状的对端会 `-32602`"，并补一句"v0.3 `message/send` 响应保留请求里的 `message.metadata`（0.5.0 起的有意行为）"。
+- **不要预先写联调结果**：README 的 Pi/Hermes 联调小节留到矩阵 18 真正执行时再补；本次只写"待联调"。
 
 - [ ] **Step 2: requirements.md + 0.5.0 spec**
 
