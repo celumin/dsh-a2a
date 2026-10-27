@@ -3,7 +3,7 @@
 > 位置：`https://github.com/celumin/dsh-a2a.git` 的 `dsh-a2a/docs/requirements.md`
 > 本文件汇总 dsh-a2a fork 包的改进需求。每条需求标注来源、现状、期望、验收、状态与前置。
 > 上游：`https://github.com/zyfgood/dsh-a2a.git`；fork：`https://github.com/celumin/dsh-a2a.git`
-> 当前基线：`@celumin/dsh-a2a@0.5.0`（npm 已发布；0.6.0 已构建、**待人工发布**）；下一个交付：`0.6.0`
+> 当前基线：`@celumin/dsh-a2a@0.6.0`（npm 已发布，tag `v0.6.0`）；下一个交付：待定
 > 验证环境：dsh CLI `0.2.1-rc.2` · `@deepseek-harness-tui/dsh-tui` `0.16.1` · Node `v24.21.0` · Linux
 > 最后更新：2026-10-25（第四次修订：R1 经对抗性 review 后重写——v1.0 **响应**适配 + 端点授权算法（同源路径作用域、跨源独立白名单 `clientCardEndpointPatterns`）+ `{id}` 参数修正 + 必要管线；默认版本 v0.3；新增 R7（卡片发现缓存，0.5.0 候选）。第三次修订 2026-10-25：R1 扩为含 v1.0 报文适配。第二次修订 2026-10-24：复核源码后纠正 R1 根因——不是探测顺序，而是客户端 URL 规范化 + method 名写死；`agent.json` 别名整项取消；R5 明确为"把不可重试变成模型可见"。第一次修订依据 `2026-10-23-tui-profile-install-investigation.md`，R2 由"待评估"改为"已验证无需修复"）
 
