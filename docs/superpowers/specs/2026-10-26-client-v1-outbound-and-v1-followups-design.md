@@ -1,12 +1,12 @@
 # dsh-a2a 0.6.0 设计：出站报文按版本切换（R8）+ 0.5.0 遗留修复
 
-> 状态：定稿 v5（第二轮 spec review 吸收后修订）
-> 日期：2026-10-26（v4/v5：2026-10-27）
+> 状态：定稿 v6（三轮 spec review 后冻结）
+> 日期：2026-10-26（v4–v6：2026-10-27）
 > 范围：dsh-a2a 0.6.0
 > 需求来源：`docs/requirements.md` R8（0.6.0 候选）；0.5.0 分支终审的 deferred minors
 > 关联：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md`（0.5.0，已发布）、`docs/debug/A2A_pi_agent_communication.md`（真实 v1.0 wire 抓包）
 > 证据基线：`@celumin/dsh-a2a@0.5.0` 已发布 = tag `v0.5.0` @ `e1a1b18`（npm dist-tag `latest`；用 `git ls-remote --tags fork` 核对，clone 的本地 tag 可能不同步）；本轮改动起点 `cd82893`。
-> 评审报告：第一轮 `docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（4×P1 / 6×P2；v3 吸收全部 10 条，v4 再吸收两条越界发现 M6/M7）；第二轮 `docs/superpowers/reviews/specs/2026-10-27-client-v1-outbound-and-v1-followups-review-r2.md`（2×P1 / 2×P2；v5 吸收）。评审报告在 spec 冻结后随仓库提交。
+> 评审报告（随本版提交）：`docs/superpowers/reviews/specs/2026-10-26-client-v1-outbound-and-v1-followups-review.md`（第一轮 4×P1 / 6×P2；v3 吸收全部，v4 吸收两条越界 M6/M7）、`...-2026-10-27-...-review-r2.md`（第二轮 2×P1 / 2×P2；v5 吸收）、`...-2026-10-27-...-review-r3.md`（第三轮 0×P1 / 4×P2，结论"可以进计划"；v6 吸收）。
 
 ## 1. 背景
 
@@ -173,7 +173,7 @@ export const RPC_ROUTES: Readonly<Record<string, RpcRoute>> = {
   - `part.kind` **存在**但不是 `text`/`data`/`file` → 该 part **省略**（不按成员反推，避免把未知类型误读成 text）；
   - `part.kind` **缺失** → 按成员判别：`text: string` / `data: object`（非数组）/ `file: object` 且含 `uri` 或 `bytes`；判不出 → 省略；
   - part 不是对象（`null`/标量）→ 省略。
-- **数组与容器**：`message.parts` 非数组 → `[]`；`history` / `artifacts` 非数组 → 省略该字段；artifact 非对象 → 省略该项；`artifact.parts` 非数组 → `[]`。
+- **数组与容器**：`message.parts` 非数组 → `[]`；`history` / `artifacts` 非数组 → 省略该字段；artifact **不是对象** → 省略该项；artifact 是对象 → **保留**（`artifactId` 缺失时不写该键，不据此丢弃），`artifact.parts` 非数组 → `[]`。因此 `artifacts:[{}]` → `[{parts:[]}]`，不是丢空。
 - **message**：`status.message` 或 `history[]` 里的项不是对象 → **省略该 message**（不返回 `{}`：`{}` 不是合法 v1 Message，只是把"缺字段"换成另一种非法形状）。
 - **task 本身不是对象**（`null`/标量）：返回 `{status:{state:'TASK_STATE_UNSPECIFIED'}}` 作为退化骨架——调用方传的不是 task，没有任何字段值得保留。
 - **合法输入输出逐字段不变**（0.5.0 已发布行为不回退）。
@@ -218,7 +218,8 @@ export function checkVersionHeader(
   - **基线行**（现 `:6`）改为 `@celumin/dsh-a2a@0.5.0`（npm 已发布；0.6.0 已构建、**待人工发布**）/ 下一个交付 `0.6.0`；**发布前不得写"0.6.0 已发布"**（本计划不执行 npm publish）；
   - R8 状态改成**不虚报**的写法：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见 §4 矩阵 18）`——需求原文的验收含"回归 Pi/Hermes 两条宽容链路"，仓库内等价物不能替代真实联调；
   - R8 条目补"验收证据"（strict proxy 用例名、capture 断言、`npm test` 计数）与"遗留修复（M1–M7：M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）"一行；
-  - R8 在 `:193` 的映射表行同步改状态。
+  - R8 在 `:193` 的映射表行同步改状态，文案写成 `—（进行中，0.6.0）`（与 R8 状态一致，**不要**写"已完成"）。
+- **评审报告**：三份报告随 v6 提交进 `docs/superpowers/reviews/specs/`，Task 7 不再需要 add。
 - **0.5.0 spec 加一行取代注记**（保留原文）：`docs/superpowers/specs/2026-10-25-server-v1-aliases-design.md` §3.1 的表头下加
   "> 0.6.0 更正：本表的响应头规则由 `2026-10-26-client-v1-outbound-and-v1-followups-design.md` §3.3 取代（v1 名字全集 11 个，push 配置族也判 `1.0`）。"
   否则两份 spec 并存会让人按旧表把 M1 改回去。
@@ -233,6 +234,7 @@ export function checkVersionHeader(
 - 其余字段（`messageId` / `taskId` / `contextId` / `metadata`）原样保留。
 - 对 v0.3 输入**幂等**：role 已是小写、part 已有 `kind`、message 已有 `kind` → 输出与输入逐字段相同。
 - `history` 不是数组时保持现状（不新增字段，也不把 `history:'x'` 变成 `[]`）；`history[]` 里的项不是对象 → 丢弃该项。
+- **最后一个未归一的响应入口**：`sendStream` 的"对端退化为同步 JSON"回退分支（`src/client.ts:391-395`）现在直接把 `payload.result as A2aTask`；改为 `normalizeTask(payload.result)`。今天它被 v1 守卫挡着（v1 不会走 `sendStream`），但 v0.3 卡片的对端若返回 v1 形状的 `{task}`/`TASK_STATE_*`，这里会漏归一。M6 的承诺是"所有响应入口同一套归一"。
 
 ### 3.9 `-32003` 双语义消歧（M7）
 
@@ -268,7 +270,7 @@ export function classifyError(code: number, method?: string): { retryable?: bool
 | 10 | `message/send` / `tasks/get` / `message/stream` | `A2A-Version: 0.3.0`（现状保持） |
 | 11 | `X-A2A-Version: ""` / 纯空白；`A2A-Version: ""` | 200 + `0.3.0`（等价无头） |
 | 12 | `X:""` + `A:2.0`；`X:2.0`；`A:2.0` | 400，错误体含**选中的值**（`X:''+A:2.0` → 含 `2.0`） |
-| 13 | `toV1Task` 的非法输入：`state:'bogus'`；缺 `status`；`status:null`；`history:'x'`；`artifacts:[{}]` | 均不抛；status 有 `state`（`TASK_STATE_UNSPECIFIED`）；`history:'x'` → **省略 `history` 字段**；`artifacts:[{}]` → 该 artifact 被省略 |
+| 13 | `toV1Task` 的非法输入：`state:'bogus'`；缺 `status`；`status:null`；`history:'x'`；`artifacts:[{}]` | 均不抛；status 有 `state`（`TASK_STATE_UNSPECIFIED`）；`history:'x'` → **省略 `history` 字段**；`artifacts:[{}]` → `[{parts:[]}]`（对象保留、缺 `artifactId` 不写） |
 | 13b | `status.message:'nope'`；`history[0].parts:'x'`；`artifacts[0].parts:'x'` | 分别：**省略 `status.message`**；`history[0].parts === []`；`artifacts[0].parts === []` |
 | 14 | `toV1Task` 的 part 规则 | 显式未知 `kind`（`{kind:'video',text:'x'}`）→ 省略；**缺 `kind`** 的 `{text:'ok'}` → 保留为 `[{text:'ok'}]`；非对象 → 省略 |
 | 15 | v0.3 `message/send`（无 metadata） | 响应 `history[]` 无 `metadata` 键（钉死） |
@@ -278,11 +280,12 @@ export function classifyError(code: number, method?: string): { retryable?: bool
 | 19 | v1 响应（strict proxy → 真实 0.5.0 服务端，用必抛错 runner 让服务器写 `status.message`）的 message 归一 | `state === 'failed'`；`history[0]` 与 `status.message` 的 role 是 `user`/`agent`、part 带 `kind`、message 带 `kind:'message'` |
 | 20 | `classifyError(-32003, 'CreateTaskPushNotificationConfig')` / `(-32003)` / `(-32003, 'message/send')` | `{retryable:false}` / `{retryable:true}` / `{retryable:true}` |
 | 21 | v1 响应的 JSON-RPC 错误 | `A2aRpcError.method === 'SendMessage'`（错误对象携带方法名，分类据此消歧） |
+| 22 | `sendStream` 的非 SSE 回退（v0.3 卡片、对端返回 `{task}` + `TASK_STATE_*`） | 返回事件里的状态是内部值（`completed`），不泄漏 `TASK_STATE_*` |
 
 ## 5. 测试计划
 
 - **compat 单测**：矩阵 1–3、13–14（含 13b 的三条容器规则；`wireMessageFor` / `toV1Task` 兜底）、`checkVersionHeader` 的取值/优先级/非字符串拒绝、矩阵 19 的 `normalizeTask` message 归一（含 v0.3 幂等）、矩阵 20 的 `classifyError` 消歧。
-- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫 + 错误码）、8–12（响应头、push 配置家族、v0.3 `/list` `/delete`、版本门）、15–16（metadata 钉死）、19/21（v1 响应 message 归一 + 错误对象带方法）；**外加真值不漂移**：`import { RPC_ROUTES }` 跑 §3.3 的 5 条不变量。
+- **smoke（真实服务器）**：矩阵 4–7（capture 断言线上字节；strict proxy 端到端；v1 `sendStream` 守卫 + 错误码）、8–12（响应头、push 配置家族、v0.3 `/list` `/delete`、版本门）、15–16（metadata 钉死）、19/21/22（v1 响应 message 归一、错误对象带方法、`sendStream` 回退归一）；**外加真值不漂移**：`import { RPC_ROUTES }` 跑 §3.3 的 **6 条**不变量（第 6 条是 `PUSH_CONFIG_METHOD_NAMES` 与路由表/`V1_METHOD_NAMES` 的一致性）。
 - **strict fixture**：测试内联的小 proxy（`node:http`）：解析 `SendMessage` 的 `params.message`，若含 `kind`、或 `role` 不以 `ROLE_` 开头、或 part 含 `kind` → 回 `-32602`；否则转发给真实 `A2aServer` 并把响应原样回传；卡片改用 `supportedInterfaces:[{url:<proxy>,protocolVersion:'1.0'}]`。**只存在于 tests，不进生产代码**。
 - **回归**：v0.3 链路的仓库内等价物——现有 `v10Card` / `v03Card` capture 用例、A2aClient 回环、`message/stream` SSE 用例。
 - **人工联调（矩阵 18）**：真实 Pi / Hermes 各一次 `a2a_send`；结果与回包形状记进 README 的联调小节，未执行则 R8 保持"进行中"。
@@ -312,6 +315,8 @@ export function classifyError(code: number, method?: string): { retryable?: bool
 | 4 | `toV1Task` 兜底到底覆盖哪些形状？ | 覆盖 §3.4 全部结构性畸形（task/status 非对象、数组非数组、message 非对象、part 二分支）；task 非对象返回退化骨架 | 只兜"字段畸形"会让 `{kind:'task',id,contextId}`（缺 status）仍抛 `TypeError`，与"公开导出不崩"的目标自相矛盾。代价是可能把调用方 bug 变成空任务，用测试与 §3.4 钉死形状。 |
 | 5 | M6 归一哪些 message？未知 role 怎么办？ | `status.message` + `history[]`；未知 role 原样保留 | 只补 role 会让 `history[].parts` 仍是"无 kind 的成员形态"，内部消费方按 `kind` 分支会读不到；未知 role 猜成 `user` 会掩盖对端 bug。 |
 | 6 | M7 怎么消歧 `-32003`？ | 客户端 `classifyError(code, method?)` + `A2aRpcError.method`；不改数值、不改服务端 | 改数值会破坏 A2A 协议语义与 0.5.0 已发布行为；让 `-32003` "不表态"会丢掉 R5 的"网关上游不可用可重试"建议。方法名是唯一可靠且不破坏两边的区分点。 |
+| 7 | `artifacts:[{}]` 保留还是丢弃？ | **保留**为 `[{parts:[]}]`（缺 `artifactId` 不写该键） | §3.4 的判据是"是不是对象"，`{}` 是对象；"没有 artifactId 就丢弃"是未授权的行为，会把"字段缺失"升级成"数据丢失"。 |
+| 8 | `sendStream` 的非 SSE 回退要不要归一？ | 用 `normalizeTask` 归一 | 它是最后一个 `result as A2aTask` 的入口；v0.3 卡片的对端若回 v1 形状，状态会以 `TASK_STATE_*` 泄漏给调用方。今天被 v1 守卫挡着，不代表以后不会踩。 |
 
 ## 8. 工量
 

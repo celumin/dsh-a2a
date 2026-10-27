@@ -497,6 +497,12 @@ test('toV1Task：结构性非法输入不抛、不产 null、status 有 state', 
     artifacts: [{ artifactId: 'a', parts: 'x' }],
   })
   assert.deepEqual(badArtifactParts.artifacts[0].parts, [])
+
+  // `{}` 是对象：保留为 {parts:[]}，不因为没有 artifactId 就丢弃（§3.4）。
+  const emptyArtifact = toV1Task({
+    kind: 'task', id: 't9', contextId: 'c9', status: { state: 'completed' }, artifacts: [{}],
+  })
+  assert.deepEqual(emptyArtifact.artifacts, [{ parts: [] }])
 })
 
 test('toV1Task：part 二分支（显式未知 kind 省略；缺 kind 按成员判别）', () => {
@@ -519,8 +525,9 @@ test('checkVersionHeader：空头等价没带，非空 X 优先，其余主版�
   for (const [x, a] of [['2.0', undefined], [undefined, '2.0'], ['v1.0', undefined]]) {
     assert.equal(checkVersionHeader(x, a).ok, false, `${x} / ${a}`)
   }
-  // 非字符串头：非法，raw 用 ','.join 固定下来。
+  // 非字符串头：非法，raw 取导致拒绝的那个头（先 x 后 a）。
   assert.deepEqual(checkVersionHeader(['1.0', '2.0'], undefined), { ok: false, raw: '1.0,2.0' })
+  assert.deepEqual(checkVersionHeader('', ['2.0']), { ok: false, raw: '2.0' })
 })
 ```
 
@@ -571,8 +578,9 @@ Expected: compat FAIL（`checkVersionHeader` 未导出；缺 `status` / `status:
 - `v1Part` 返回 `Record<string, unknown> | undefined`，**二分支**：显式 `kind` 不在三型 → `undefined`；缺 `kind` → 按成员判别（`text: string` / `data: object` 非数组 / `file: object` 含 `uri|bytes`），判不出 → `undefined`；
 - 容器：`message.parts` 非数组 → `[]`；`history`/`artifacts` 非数组 → 省略；artifact 非对象 → 省略；`artifact.parts` 非数组 → `[]`；
 - message 非对象 → 省略该 message（`status.message` 省略、history 项省略）；
+- artifact 不是对象 → 省略该项；是对象 → 保留，**`artifactId` 缺失时不写该键**（`...(artifactId !== undefined ? {artifactId} : {})`），`parts` 非数组 → `[]`；
 - task 非对象 → `{status:{state:'TASK_STATE_UNSPECIFIED'}}`；
-- `checkVersionHeader(x, a)`：按 spec §3.5 三步；`undefined` → 没带；`string[]` → `ok:false`、`raw = x.join(',')`；其他非字符串 → `ok:false`、`raw = String(x)`。
+- `checkVersionHeader(x, a)`：按 spec §3.5 三步；`undefined` → 没带；非字符串 → `ok:false`、**`raw` 取导致拒绝的那个头（先 `x` 后 `a`）**：`Array.isArray(v) ? v.join(',') : String(v)`。
 
 `server.ts`：`res.setHeader('A2A-Version', wireVersionFor(method))` 之前用 `const gate = checkVersionHeader(req.headers['x-a2a-version'], req.headers['a2a-version'])`，`gate.ok === false` → 400（文案用 `gate.raw`）。
 
@@ -594,7 +602,7 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 
 **Files:**
 - Modify: `src/compat.ts`（`normalizeMessage` + `normalizeTask` 应用；`classifyError` 加 `method` 参数）
-- Modify: `src/client.ts`（`A2aRpcError` 第 4 个可选参 `method`；`rpc()` 与 `sendStream` 的 JSON-RPC 错误带上方法名）
+- Modify: `src/client.ts`（`A2aRpcError` 第 4 个可选参 `method`；`rpc()` 与 `sendStream` 的 JSON-RPC 错误带上方法名；`sendStream` 非 SSE 回退改用 `normalizeTask`）
 - Modify: `src/tools.ts`（`failure()` 传 `error.method`；`retryable` 描述补一句）
 - Test: `tests/compat.mjs`、`tests/smoke.mjs`
 
@@ -667,6 +675,22 @@ await test('Round 2.6：v1 响应 history/status.message 归一成内部形状',
   }
 })
 
+await test('Round 2.6：sendStream 的非 SSE 回退也走 normalizeTask', async () => {
+  const agent = await startAgent({ ...v03Card, capabilities: { streaming: true } }, (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(rpcResult(req, {
+      task: { id: 't1', contextId: 'c1', status: { state: 'TASK_STATE_COMPLETED' }, artifacts: [{ parts: [{ text: 'ok' }] }] },
+    })))
+  })
+  try {
+    const c = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+    const events = await c.sendStream('x', () => {})
+    assert.equal(events[events.length - 1].status.state, 'completed')
+  } finally {
+    await agent.close()
+  }
+})
+
 await test('Round 2.6：JSON-RPC 错误对象携带方法名', async () => {
   const agent = await startAgent(v10Card, (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -702,12 +726,14 @@ Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `un
 
 `client.ts`：`A2aRpcError` 构造器加第 4 个可选参 `method`；`rpc()` 里两处 JSON-RPC 错误抛出（`rpcError !== undefined`）带 `method`；`sendStream` 两处 JSON-RPC 错误带 `methodsFor(version).stream`。
 
+`client.ts`：`sendStream` 的非 SSE 回退分支把 `payload.result as A2aTask` 改成 `normalizeTask(payload.result)`（`normalizeTask` 从 compat 引入）。
+
 `tools.ts`：`failure(error)` 用 `classifyError(error.code, error.method)`；`retryable` 描述改成「是否鼓励重试：`-32005`/`-32006` 为 false；`-32003` 对 push 配置方法为 false，其余为 true」。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npm test`
-Expected: PASS（smoke 79 + compat 59）
+Expected: PASS（smoke 80 + compat 59）
 
 - [ ] **Step 5: 提交**
 
@@ -739,8 +765,9 @@ git commit -m "fix(compat): normalize v1 response messages and disambiguate -320
 - 基线行（`:6`）：`@celumin/dsh-a2a@0.5.0`（npm 已发布；0.6.0 已构建、**待人工发布**）/ 下一个交付 `0.6.0`——**发布前不要写"0.6.0 已发布"**（本计划不执行 npm publish；真发布后再回填基线行）；
 - R8 状态：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）`——**不要**写"已完成"；
 - R8 追加 `- **验收证据**：`（strict proxy 用例名、capture 断言、`npm test` 计数）与 `- **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）`；
-- `:193` 映射行同步；
-- 0.5.0 spec §3.1 表头下加取代注记（见设计 spec §3.7）。
+- `:193` 映射行同步，文案 `—（进行中，0.6.0）`（**不要**写"已完成"）；
+- 0.5.0 spec §3.1 表头下加取代注记（见设计 spec §3.7）；
+- 三份评审报告已随 spec v6 提交（`docs/superpowers/reviews/specs/`），本 task 不需要再 add。
 
 - [ ] **Step 3: 版本与构建**
 
@@ -749,7 +776,7 @@ git commit -m "fix(compat): normalize v1 response messages and disambiguate -320
 - [ ] **Step 4: 全量验证**
 
 Run: `npm test && npm run verify`
-Expected: smoke 79 + compat 59、verify 通过。
+Expected: smoke 80 + compat 59、verify 通过。
 
 - [ ] **Step 5: 提交**
 
