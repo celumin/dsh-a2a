@@ -315,6 +315,7 @@ git commit -m "test: accept the v1.0 outbound shape against a strict fixture"
 
 **Interfaces:**
 - Produces: `export const V1_METHOD_NAMES: readonly string[]`（11 个）、`export const V1_ALIASES: ReadonlySet<string>`（3 个）
+- Produces: `export const PUSH_CONFIG_METHOD_NAMES: readonly string[]`（8 个：v0.3 `set|get|list|delete` + 4 个 v1 名字）、`export function isPushConfigMethod(method: string | undefined): boolean`（Task 6 的 M7 用它）
 - Produces: `export interface RpcRoute`、`export const RPC_ROUTES: Readonly<Record<string, RpcRoute>>`（server.ts，供测试枚举）
 - Produces: `isV1Method` / `wireVersionFor` 签名不变；`V1_METHODS` / `V1_WIRE_METHODS` 删除（无外部引用，已 grep）
 - Consumes: `handleSend`/`handleGetTask`/`handleCancel`（签名不变）
@@ -324,9 +325,9 @@ git commit -m "test: accept the v1.0 outbound shape against a strict fixture"
 `tests/compat.mjs`（替换现有 `isV1Method / wireVersionFor` 用例；数量不变）：
 
 ```js
-import { V1_METHOD_NAMES, V1_ALIASES, isV1Method, wireVersionFor } from '../lib/protocol.js'
+import { V1_METHOD_NAMES, V1_ALIASES, PUSH_CONFIG_METHOD_NAMES, isV1Method, wireVersionFor } from '../lib/protocol.js'
 
-test('v1 方法名：全集判 1.0，别名集合只含三个', () => {
+test('v1 方法名：全集判 1.0，别名集合只含三个，push 集合不越界', () => {
   for (const m of V1_METHOD_NAMES) assert.equal(wireVersionFor(m), '1.0', m)
   assert.equal(V1_METHOD_NAMES.length, 11)
   for (const m of ['message/send', 'message/stream', 'tasks/get', 'tasks/cancel', 'tasks/resubscribe', 'agent/authenticatedExtendedCard', 'CustomThing']) {
@@ -335,6 +336,17 @@ test('v1 方法名：全集判 1.0，别名集合只含三个', () => {
   assert.deepEqual([...V1_ALIASES].sort(), ['CancelTask', 'GetTask', 'SendMessage'])
   for (const alias of V1_ALIASES) assert.equal(isV1Method(alias), true, alias)
   for (const name of V1_METHOD_NAMES.filter((m) => !V1_ALIASES.has(m))) assert.equal(isV1Method(name), false, name)
+
+  // push 集合三分法：v0.3 前缀名判 0.3.0，v1 名必须同时在 V1_METHOD_NAMES 里；4 个 v1 push 名是交集。
+  assert.equal(PUSH_CONFIG_METHOD_NAMES.length, 8)
+  for (const m of PUSH_CONFIG_METHOD_NAMES) {
+    if (m.startsWith('tasks/pushNotificationConfig/')) assert.equal(wireVersionFor(m), '0.3.0', m)
+    else assert.equal(V1_METHOD_NAMES.includes(m), true, m)
+  }
+  assert.deepEqual(
+    PUSH_CONFIG_METHOD_NAMES.filter((m) => V1_METHOD_NAMES.includes(m)).sort(),
+    ['CreateTaskPushNotificationConfig', 'DeleteTaskPushNotificationConfig', 'GetTaskPushNotificationConfig', 'ListTaskPushNotificationConfigs'],
+  )
 })
 ```
 
@@ -390,10 +402,19 @@ await test('Round 2.6：RPC_ROUTES 与 v1 名字集合不漂移', () => {
   for (const name of V1_METHOD_NAMES.filter((m) => !V1_ALIASES.has(m))) {
     assert.equal(isV1Method(name), false, name)
   }
+  // push 集合与路由表互相兜底：每个 pushConfig 路由键都在 PUSH_CONFIG_METHOD_NAMES 里；
+  // 表里 v1 的 pushConfig 键正好是"push 集合 ∩ V1 名字"（以后加名字必须三处一起改）。
+  for (const [method, route] of Object.entries(RPC_ROUTES)) {
+    if (route.handler === 'pushConfig') assert.equal(PUSH_CONFIG_METHOD_NAMES.includes(method), true, method)
+  }
+  assert.deepEqual(
+    Object.entries(RPC_ROUTES).filter(([, r]) => r.handler === 'pushConfig' && r.v1).map(([m]) => m).sort(),
+    PUSH_CONFIG_METHOD_NAMES.filter((m) => V1_METHOD_NAMES.includes(m)).sort(),
+  )
 })
 ```
 
-测试文件顶部补 `import { V1_METHOD_NAMES, V1_ALIASES, isV1Method } from '../lib/protocol.js'`（若尚未导入）。
+测试文件顶部补 `import { V1_METHOD_NAMES, V1_ALIASES, PUSH_CONFIG_METHOD_NAMES, isV1Method } from '../lib/protocol.js'`（若尚未导入）。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -402,7 +423,7 @@ Expected: compat FAIL（`V1_METHOD_NAMES` 未导出）；smoke 第一条 FAIL（
 
 - [ ] **Step 3: 实现**
 
-`protocol.ts`：`V1_METHOD_NAMES`（11 个，见 spec §3.3）+ `V1_ALIASES`（三个）替换旧常量；`wireVersionFor` 用 `includes`。
+`protocol.ts`：`V1_METHOD_NAMES`（11 个，见 spec §3.3）+ `V1_ALIASES`（三个）替换旧常量；`wireVersionFor` 用 `includes`；新增 `PUSH_CONFIG_METHOD_NAMES`（8 个）与 `isPushConfigMethod`（`PUSH_CONFIG_METHOD_NAMES.includes`）。
 
 `server.ts`：
 - 模块级 `export interface RpcRoute` + `export const RPC_ROUTES`（12 条，见 spec §3.3）；`dispatch` 先查表再走 `agent/authenticatedExtendedCard`、`tasks/resubscribe`、default `-32601`；
@@ -460,6 +481,22 @@ test('toV1Task：结构性非法输入不抛、不产 null、status 有 state', 
     assert.equal(out.status.state, 'TASK_STATE_UNSPECIFIED')
     assert.equal('history' in out && Array.isArray(out.history), false)
   }
+
+  // §3.4 的三条容器规则，各有精确期望（不是"省略或为空"这种两可写法）。
+  const badMsg = toV1Task({ kind: 'task', id: 't6', contextId: 'c6', status: { state: 'completed', message: 'nope' } })
+  assert.equal('message' in badMsg.status, false)
+
+  const badMsgParts = toV1Task({
+    kind: 'task', id: 't7', contextId: 'c7', status: { state: 'completed' },
+    history: [{ role: 'user', messageId: 'm', parts: 'x' }],
+  })
+  assert.deepEqual(badMsgParts.history[0].parts, [])
+
+  const badArtifactParts = toV1Task({
+    kind: 'task', id: 't8', contextId: 'c8', status: { state: 'completed' },
+    artifacts: [{ artifactId: 'a', parts: 'x' }],
+  })
+  assert.deepEqual(badArtifactParts.artifacts[0].parts, [])
 })
 
 test('toV1Task：part 二分支（显式未知 kind 省略；缺 kind 按成员判别）', () => {
@@ -557,7 +594,6 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 
 **Files:**
 - Modify: `src/compat.ts`（`normalizeMessage` + `normalizeTask` 应用；`classifyError` 加 `method` 参数）
-- Modify: `src/protocol.ts`（新增 `PUSH_CONFIG_METHOD_NAMES` + `isPushConfigMethod`）
 - Modify: `src/client.ts`（`A2aRpcError` 第 4 个可选参 `method`；`rpc()` 与 `sendStream` 的 JSON-RPC 错误带上方法名）
 - Modify: `src/tools.ts`（`failure()` 传 `error.method`；`retryable` 描述补一句）
 - Test: `tests/compat.mjs`、`tests/smoke.mjs`
@@ -565,8 +601,7 @@ git commit -m "fix(protocol): structural fallbacks, version-gate helper and meta
 **Interfaces:**
 - Produces: `export function classifyError(code: number, method?: string): { retryable?: boolean }`
 - Produces: `class A2aRpcError { constructor(code: number, message: string, data?: unknown, method?: string) }`
-- Produces: `export const PUSH_CONFIG_METHOD_NAMES: readonly string[]`、`export function isPushConfigMethod(method: string | undefined): boolean`
-- Consumes: `V1_METHOD_NAMES`（Task 4）、`normalizePart`（已有）
+- Consumes: `PUSH_CONFIG_METHOD_NAMES` / `isPushConfigMethod`（Task 4）、`normalizePart`（已有）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -612,11 +647,14 @@ test('classifyError：-32003 按方法消歧（push 配置不可重试）', () =
 
 ```js
 await test('Round 2.6：v1 响应 history/status.message 归一成内部形状', async () => {
-  const strict = await startStrictV1(rpc)
+  // status.message 只在 failed/timeout 由服务器写入（agentNote）；input-required 分支
+  // 只写 artifact，所以这里必须用"必然抛错"的 runner，否则 status.message 是 undefined。
+  const failing = await startServer({ runner: { async run() { throw new Error('boom') } } })
+  const strict = await startStrictV1(failing.url)
   try {
     const client = new A2aClient({ baseUrl: strict.origin, timeoutMs: 5000 })
-    const { task } = await client.sendForText('NEED_INPUT')
-    assert.equal(task.status.state, 'input-required')
+    const { task } = await client.sendForText('boom')
+    assert.equal(task.status.state, 'failed')
     assert.equal(task.status.message.role, 'agent')
     assert.equal(task.status.message.kind, 'message')
     assert.equal(task.status.message.parts[0].kind, 'text')
@@ -625,6 +663,7 @@ await test('Round 2.6：v1 响应 history/status.message 归一成内部形状',
     assert.equal(task.history[0].parts[0].kind, 'text')
   } finally {
     await strict.close()
+    await failing.server.stop()
   }
 })
 
@@ -652,7 +691,7 @@ Expected: compat FAIL（v1 `history[0].role` 仍是 `ROLE_USER`、`kind` 为 `un
 
 - [ ] **Step 3: 实现**
 
-`protocol.ts`：`PUSH_CONFIG_METHOD_NAMES`（8 个：v0.3 的 set/get/list/delete + v1 的 4 个名字）+ `isPushConfigMethod(method)`；`compat.ts` 的 `classifyError` 从 protocol 引入该函数（protocol 不 import compat，无环）。
+`compat.ts` 的 `classifyError` 从 protocol 引入 `isPushConfigMethod`（常量与函数在 Task 4 已建；protocol 不 import compat，无环），并把 doc 注释从"`-32003`（上游不可用）可重试"改成"`-32003` 按方法消歧：push 配置不可重试，其余可重试"。
 
 `compat.ts`：新增内部 `normalizeMessage(raw)`：
 - 非对象 → `undefined`；
@@ -697,7 +736,7 @@ git commit -m "fix(compat): normalize v1 response messages and disambiguate -320
 
 - [ ] **Step 2: requirements.md + 0.5.0 spec**
 
-- 基线行（`:6`）：`@celumin/dsh-a2a@0.6.0`（npm 已发布）/ 下一个交付 `0.7.0`（待定）；
+- 基线行（`:6`）：`@celumin/dsh-a2a@0.5.0`（npm 已发布；0.6.0 已构建、**待人工发布**）/ 下一个交付 `0.6.0`——**发布前不要写"0.6.0 已发布"**（本计划不执行 npm publish；真发布后再回填基线行）；
 - R8 状态：`进行中（0.6.0：实现与仓库内验收完成；真实 Pi/Hermes 联调待执行，见设计 spec §4 矩阵 18）`——**不要**写"已完成"；
 - R8 追加 `- **验收证据**：`（strict proxy 用例名、capture 断言、`npm test` 计数）与 `- **遗留修复（随 0.6.0）**：M1–M7（M1–M5 来自 0.5.0 终审，M6–M7 来自 0.6.0 spec review）`；
 - `:193` 映射行同步；
