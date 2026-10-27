@@ -13,7 +13,7 @@
  *   - `tasks/cancel`        取消进行中的任务；
  *   - `tasks/resubscribe`   SSE 回放缓冲事件并继续实时跟随；
  *   - `agent/authenticatedExtendedCard`（启用鉴权时）返回扩展卡片；
- *   - `tasks/pushNotificationConfig/*` → -32003（未实现推送通知）。
+ *   - `tasks/pushNotificationConfig/set|get` → -32003（未实现推送通知）。
  *
  * 传输细节：
  * - 所有响应带 `A2A-Version` 头；RPC 响应的值跟随**请求方法名**的 wire
@@ -61,6 +61,32 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024
 
 /** SSE 心跳间隔（注释行，维持代理/负载均衡不断连）。 */
 const SSE_HEARTBEAT_MS = 15_000
+
+/**
+ * JSON-RPC 路由真值表（0.6.0 spec §3.3）：v0.3 名字与 v1.0 名字共用同一
+ * handler；`v1` 决定出站包装形状。v0.3 的 push `/list` `/delete` **刻意
+ * 不在表里**——它们从未实现，今天走 default → -32601，加进来会变成 -32003。
+ * 导出是为了让测试枚举真值，不是公开 API。
+ */
+export interface RpcRoute {
+  readonly handler: 'send' | 'getTask' | 'cancel' | 'pushConfig'
+  readonly v1: boolean
+}
+
+export const RPC_ROUTES: Readonly<Record<string, RpcRoute>> = {
+  'message/send': { handler: 'send', v1: false },
+  SendMessage: { handler: 'send', v1: true },
+  'tasks/get': { handler: 'getTask', v1: false },
+  GetTask: { handler: 'getTask', v1: true },
+  'tasks/cancel': { handler: 'cancel', v1: false },
+  CancelTask: { handler: 'cancel', v1: true },
+  'tasks/pushNotificationConfig/set': { handler: 'pushConfig', v1: false },
+  'tasks/pushNotificationConfig/get': { handler: 'pushConfig', v1: false },
+  CreateTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
+  GetTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
+  ListTaskPushNotificationConfigs: { handler: 'pushConfig', v1: true },
+  DeleteTaskPushNotificationConfig: { handler: 'pushConfig', v1: true },
+}
 
 /** 任务 runner 入参：controller 驱动状态机，message 为本轮用户消息。 */
 export interface RunnerInput {
@@ -361,33 +387,27 @@ export class A2aServer {
 
   /** 非流式方法的统一分发。 */
   private async dispatch(request: JsonRpcRequest): Promise<JsonRpcResponse> {
-    switch (request.method) {
-      case 'message/send':
-        return this.handleSend(request, false)
-      // v1.0 别名（Round 2.6 spec §3.2）：入站归一后与 v0.3 handler 共用，
-      // 只有出站包装/版本头按方法名分支。
-      case 'SendMessage':
-        return this.handleSend(request, true)
-      case 'tasks/get':
-        return this.handleGetTask(request, false)
-      case 'GetTask':
-        return this.handleGetTask(request, true)
-      case 'tasks/cancel':
-        return this.handleCancel(request, false)
-      case 'CancelTask':
-        return this.handleCancel(request, true)
-      case 'agent/authenticatedExtendedCard':
-        return jsonrpcResult(request.id, this.options.card)
-      case 'tasks/pushNotificationConfig/set':
-      case 'tasks/pushNotificationConfig/get':
-        return jsonrpcError(
-          request.id,
-          A2A_ERRORS.PUSH_NOTIFICATION_NOT_SUPPORTED,
-          '本 A2A 服务器不支持推送通知',
-        )
-      default:
-        return jsonrpcError(request.id, RPC_ERRORS.METHOD_NOT_FOUND, `未知方法 ${request.method}`)
+    const route = RPC_ROUTES[request.method]
+    if (route !== undefined) {
+      switch (route.handler) {
+        case 'send':
+          return this.handleSend(request, route.v1)
+        case 'getTask':
+          return this.handleGetTask(request, route.v1)
+        case 'cancel':
+          return this.handleCancel(request, route.v1)
+        case 'pushConfig':
+          return jsonrpcError(
+            request.id,
+            A2A_ERRORS.PUSH_NOTIFICATION_NOT_SUPPORTED,
+            '本 A2A 服务器不支持推送通知',
+          )
+      }
     }
+    if (request.method === 'agent/authenticatedExtendedCard') {
+      return jsonrpcResult(request.id, this.options.card)
+    }
+    return jsonrpcError(request.id, RPC_ERRORS.METHOD_NOT_FOUND, `未知方法 ${request.method}`)
   }
 
   // ── message/send（同步执行）────────────────────────────────────────

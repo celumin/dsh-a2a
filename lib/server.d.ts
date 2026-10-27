@@ -13,7 +13,7 @@
  *   - `tasks/cancel`        取消进行中的任务；
  *   - `tasks/resubscribe`   SSE 回放缓冲事件并继续实时跟随；
  *   - `agent/authenticatedExtendedCard`（启用鉴权时）返回扩展卡片；
- *   - `tasks/pushNotificationConfig/*` → -32003（未实现推送通知）。
+ *   - `tasks/pushNotificationConfig/set|get` → -32003（未实现推送通知）。
  *
  * 传输细节：
  * - 所有响应带 `A2A-Version` 头；RPC 响应的值跟随**请求方法名**的 wire
@@ -31,6 +31,17 @@
  */
 import type { A2aMessage, AgentCard } from './protocol.ts';
 import type { TaskController } from './store.ts';
+/**
+ * JSON-RPC 路由真值表（0.6.0 spec §3.3）：v0.3 名字与 v1.0 名字共用同一
+ * handler；`v1` 决定出站包装形状。v0.3 的 push `/list` `/delete` **刻意
+ * 不在表里**——它们从未实现，今天走 default → -32601，加进来会变成 -32003。
+ * 导出是为了让测试枚举真值，不是公开 API。
+ */
+export interface RpcRoute {
+    readonly handler: 'send' | 'getTask' | 'cancel' | 'pushConfig';
+    readonly v1: boolean;
+}
+export declare const RPC_ROUTES: Readonly<Record<string, RpcRoute>>;
 /** 任务 runner 入参：controller 驱动状态机，message 为本轮用户消息。 */
 export interface RunnerInput {
     readonly controller: TaskController;

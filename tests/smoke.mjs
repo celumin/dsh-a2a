@@ -22,8 +22,8 @@
 
 import { strict as assert } from 'node:assert'
 import { createServer } from 'node:http'
-import { A2aServer, silentLogger } from '../lib/server.js'
-import { buildAgentCard } from '../lib/protocol.js'
+import { A2aServer, RPC_ROUTES, silentLogger } from '../lib/server.js'
+import { buildAgentCard, V1_METHOD_NAMES, V1_ALIASES, PUSH_CONFIG_METHOD_NAMES, isV1Method } from '../lib/protocol.js'
 import { A2aClient, A2aTimeoutError, matchesAllowlist } from '../lib/client.js'
 
 // ── 测试基础设施 ────────────────────────────────────────────────────────
@@ -1253,6 +1253,64 @@ const main = async () => {
     } finally {
       await strict.close()
     }
+  })
+
+  await test('Round 2.6：未实现的 v1 名字 -32601 但响应头是 1.0', async () => {
+    for (const method of ['ListTasks', 'SubscribeToTask', 'GetExtendedAgentCard', 'SendStreamingMessage']) {
+      const { response } = await post(rpc, { jsonrpc: '2.0', id: 1, method }, { 'X-A2A-Version': '1.0' })
+      const payload = await response.json()
+      assert.equal(response.headers.get('a2a-version'), '1.0', method)
+      assert.equal(payload.error.code, -32601, method)
+    }
+  })
+
+  await test('Round 2.6：push 配置家族（v1 名字）仍是 -32003 + 1.0 头', async () => {
+    for (const method of [
+      'CreateTaskPushNotificationConfig', 'GetTaskPushNotificationConfig',
+      'ListTaskPushNotificationConfigs', 'DeleteTaskPushNotificationConfig',
+    ]) {
+      const { response } = await post(rpc, { jsonrpc: '2.0', id: 1, method, params: {} }, { 'X-A2A-Version': '1.0' })
+      const payload = await response.json()
+      assert.equal(response.headers.get('a2a-version'), '1.0', method)
+      assert.equal(payload.error.code, -32003, method)
+    }
+  })
+
+  await test('Round 2.6：v0.3 名字仍是 0.3.0 头；/list /delete 仍 -32601', async () => {
+    for (const method of ['message/send', 'tasks/get', 'tasks/pushNotificationConfig/set', 'tasks/pushNotificationConfig/get']) {
+      const { response } = await post(rpc, { jsonrpc: '2.0', id: 1, method, params: {} })
+      assert.equal(response.headers.get('a2a-version'), '0.3.0', method)
+    }
+    for (const method of ['tasks/pushNotificationConfig/list', 'tasks/pushNotificationConfig/delete']) {
+      const { response } = await post(rpc, { jsonrpc: '2.0', id: 1, method, params: {} })
+      const payload = await response.json()
+      assert.equal(response.headers.get('a2a-version'), '0.3.0', method)
+      assert.equal(payload.error.code, -32601, method)   // 不进表：保持已发布行为
+    }
+  })
+
+  await test('Round 2.6：RPC_ROUTES 与 v1 名字集合不漂移', () => {
+    for (const alias of V1_ALIASES) {
+      assert.equal(V1_METHOD_NAMES.includes(alias), true, alias)
+      assert.equal(isV1Method(alias), true, alias)
+      assert.notEqual(RPC_ROUTES[alias].handler, 'pushConfig', alias)
+    }
+    for (const [method, route] of Object.entries(RPC_ROUTES)) {
+      if (route.v1) assert.equal(V1_METHOD_NAMES.includes(method), true, method)
+      if (route.handler === 'pushConfig') assert.equal(route.v1, V1_METHOD_NAMES.includes(method), method)
+    }
+    for (const name of V1_METHOD_NAMES.filter((m) => !V1_ALIASES.has(m))) {
+      assert.equal(isV1Method(name), false, name)
+    }
+    // push 集合与路由表互相兜底：每个 pushConfig 路由键都在 PUSH_CONFIG_METHOD_NAMES 里；
+    // 表里 v1 的 pushConfig 键正好是"push 集合 ∩ V1 名字"（以后加名字必须三处一起改）。
+    for (const [method, route] of Object.entries(RPC_ROUTES)) {
+      if (route.handler === 'pushConfig') assert.equal(PUSH_CONFIG_METHOD_NAMES.includes(method), true, method)
+    }
+    assert.deepEqual(
+      Object.entries(RPC_ROUTES).filter(([, r]) => r.handler === 'pushConfig' && r.v1).map(([m]) => m).sort(),
+      PUSH_CONFIG_METHOD_NAMES.filter((m) => V1_METHOD_NAMES.includes(m)).sort(),
+    )
   })
 
   await openServer.server.stop()

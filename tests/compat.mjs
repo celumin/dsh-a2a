@@ -13,7 +13,15 @@ import {
   decideEndpoint,
   matchesCardEndpointAllowlist,
 } from '../lib/endpoint.js'
-import { parseMessageSendParams, toV1Task, isV1Method, wireVersionFor } from '../lib/protocol.js'
+import {
+  parseMessageSendParams,
+  toV1Task,
+  V1_METHOD_NAMES,
+  V1_ALIASES,
+  PUSH_CONFIG_METHOD_NAMES,
+  isV1Method,
+  wireVersionFor,
+} from '../lib/protocol.js'
 import {
   versionOf,
   negotiateVersion,
@@ -497,15 +505,26 @@ test('toV1Task：role 变大写枚举（status.message 与 history）', () => {
   assert.equal(out.history[0].role, 'ROLE_USER')
 })
 
-test('isV1Method / wireVersionFor：按方法名决定 wire 版本', () => {
-  for (const m of ['SendMessage', 'GetTask', 'CancelTask']) {
-    assert.equal(isV1Method(m), true, m)
-    assert.equal(wireVersionFor(m), '1.0', m)
-  }
-  for (const m of ['message/send', 'message/stream', 'tasks/get', 'tasks/cancel']) {
-    assert.equal(isV1Method(m), false, m)
+test('v1 方法名：全集判 1.0，别名集合只含三个，push 集合不越界', () => {
+  for (const m of V1_METHOD_NAMES) assert.equal(wireVersionFor(m), '1.0', m)
+  assert.equal(V1_METHOD_NAMES.length, 11)
+  for (const m of ['message/send', 'message/stream', 'tasks/get', 'tasks/cancel', 'tasks/resubscribe', 'agent/authenticatedExtendedCard', 'CustomThing']) {
     assert.equal(wireVersionFor(m), '0.3.0', m)
   }
+  assert.deepEqual([...V1_ALIASES].sort(), ['CancelTask', 'GetTask', 'SendMessage'])
+  for (const alias of V1_ALIASES) assert.equal(isV1Method(alias), true, alias)
+  for (const name of V1_METHOD_NAMES.filter((m) => !V1_ALIASES.has(m))) assert.equal(isV1Method(name), false, name)
+
+  // push 集合三分法：v0.3 前缀名判 0.3.0，v1 名必须同时在 V1_METHOD_NAMES 里；4 个 v1 push 名是交集。
+  assert.equal(PUSH_CONFIG_METHOD_NAMES.length, 8)
+  for (const m of PUSH_CONFIG_METHOD_NAMES) {
+    if (m.startsWith('tasks/pushNotificationConfig/')) assert.equal(wireVersionFor(m), '0.3.0', m)
+    else assert.equal(V1_METHOD_NAMES.includes(m), true, m)
+  }
+  assert.deepEqual(
+    PUSH_CONFIG_METHOD_NAMES.filter((m) => V1_METHOD_NAMES.includes(m)).sort(),
+    ['CreateTaskPushNotificationConfig', 'DeleteTaskPushNotificationConfig', 'GetTaskPushNotificationConfig', 'ListTaskPushNotificationConfigs'],
+  )
 })
 
 // ── 汇总 ───────────────────────────────────────────────────────────────

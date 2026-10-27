@@ -232,12 +232,30 @@ export declare function parseMessageSendParams(raw: unknown): {
     ok: false;
     error: string;
 };
-/** 请求方法名是否属于 v1.0 别名集合。 */
+/**
+ * A2A 1.0 的方法名全集（含本服务端未实现/不支持的）：响应头按它判 1.0。
+ * 名字来源是本仓库内的权威表（0.6.0 设计 spec §3.3）：增删名字必须同步
+ * 该节、本文件与验收矩阵。
+ */
+export declare const V1_METHOD_NAMES: readonly string[];
+/**
+ * 其中真正有**别名分发**的三个。push 配置族 4 个名字**不在**这个集合：
+ * 它们只借 v1 名字的响应头，处理仍走 pushConfig 分支（-32003）。
+ */
+export declare const V1_ALIASES: ReadonlySet<string>;
+/** 请求方法名是否属于 v1.0 别名集合（决定是否走别名分发，不决定响应头）。 */
 export declare function isV1Method(method: string): boolean;
 /**
- * 该方法名对应的 wire 版本：v1.0 名字 → '1.0'，其余（message/send、
+ * 推送通知配置方法全集（v0.3 的 4 个前缀名 + v1 的 4 个名字）：错误分类用它
+ * 消歧 `-32003`（push 能力不支持 ≠ 上游不可用可重试）。
+ */
+export declare const PUSH_CONFIG_METHOD_NAMES: readonly string[];
+/** 该方法名是否属于推送通知配置家族。 */
+export declare function isPushConfigMethod(method: string | undefined): boolean;
+/**
+ * 该方法名对应的 wire 版本：v1.0 名字全集 → '1.0'，其余（message/send、
  * message/stream、tasks/*、resubscribe）→ '0.3.0'。响应头 A2A-Version 用它，
- * 与请求头无关（方法名决定形状与版本，spec §3.1）。
+ * 与请求头无关（方法名决定形状与版本，spec §3.3）。
  */
 export declare function wireVersionFor(method: string): '1.0' | '0.3.0';
 /**
