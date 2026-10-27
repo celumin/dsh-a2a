@@ -15,6 +15,7 @@
  */
 
 import type {
+  A2aMessage,
   A2aTask,
   AgentCard,
   Artifact,
@@ -36,6 +37,7 @@ import {
   normalizeSendResult,
   normalizeTaskResult,
   versionHeader,
+  wireMessageFor,
   type WireVersion,
 } from './compat.ts'
 
@@ -297,15 +299,16 @@ export class A2aClient {
     const { card } = await this.ensureCard()
     const version = negotiateVersion(card)
     const messageId = crypto.randomUUID()
+    const message: A2aMessage = {
+      kind: 'message',
+      role: 'user',
+      parts: [{ kind: 'text', text }],
+      messageId,
+      metadata: this.messageMetadata(options?.kind),
+      ...(options?.contextId !== undefined ? { contextId: options.contextId } : {}),
+    }
     const result = await this.rpc<unknown>(methodsFor(version).send, {
-      message: {
-        kind: 'message',
-        role: 'user',
-        parts: [{ kind: 'text', text }],
-        messageId,
-        metadata: this.messageMetadata(options?.kind),
-        ...(options?.contextId !== undefined ? { contextId: options.contextId } : {}),
-      },
+      message: wireMessageFor(version, message),
     }, deadline)
     let task = normalizeSendResult(result, options?.contextId ?? 'inline')
     while (!shouldStop(task)) {
@@ -342,20 +345,27 @@ export class A2aClient {
     const deadline = this.deadline()
     const { card, decision } = await this.ensureCard()
     const version = negotiateVersion(card)
+    if (version === 'v1.0') {
+      // v1.0 的 SendStreamingMessage 这里不做：真实 v1 服务端会回 v1 帧
+      // （{statusUpdate}/{artifactUpdate}），而解析器只认 v0.3 的 event.kind，
+      // 会静默返回空数组。提前失败，码值与"对端未实现该方法"一致。
+      throw new A2aRpcError(-32601, 'v1.0 streaming is not supported（SendStreamingMessage）')
+    }
     const messageId = crypto.randomUUID()
+    const message: A2aMessage = {
+      kind: 'message',
+      role: 'user',
+      parts: [{ kind: 'text', text }],
+      messageId,
+      metadata: this.messageMetadata(options?.kind),
+      ...(options?.contextId !== undefined ? { contextId: options.contextId } : {}),
+    }
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: 'stream-' + Date.now().toString(36),
       method: methodsFor(version).stream,
       params: {
-        message: {
-          kind: 'message',
-          role: 'user',
-          parts: [{ kind: 'text', text }],
-          messageId,
-          metadata: this.messageMetadata(options?.kind),
-          ...(options?.contextId !== undefined ? { contextId: options.contextId } : {}),
-        },
+        message: wireMessageFor(version, message),
       },
     })
     const response = await this.fetchFn()(decision.url, {

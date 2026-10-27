@@ -579,6 +579,9 @@ const main = async () => {
       const captureClient = new A2aClient({ baseUrl: fake.url, peerName: 'dsh-peer', timeoutMs: 5000 })
       await captureClient.sendStream('stream metadata', () => {}, { kind: 'result' })
       assert.deepEqual(fake.messages[0].params.message.metadata, { kind: 'result', from: 'dsh-peer' })
+      assert.equal(fake.messages[0].params.message.kind, 'message')
+      assert.equal(fake.messages[0].params.message.role, 'user')
+      assert.equal(fake.messages[0].params.message.parts[0].kind, 'text')
     } finally {
       await fake.close()
     }
@@ -837,6 +840,11 @@ const main = async () => {
       assert.equal(agent.calls[0].method, 'SendMessage')
       assert.equal(agent.calls[0].version, '1.0')
       assert.equal(agent.calls[0].url, '/rpc')
+      const body = agent.calls[0].params.message
+      assert.equal('kind' in body, false)
+      assert.equal(body.role, 'ROLE_USER')
+      assert.deepEqual(body.parts, [{ text: 'hi' }])
+      assert.equal('kind' in body.parts[0], false)
     } finally {
       await agent.close()
     }
@@ -852,6 +860,10 @@ const main = async () => {
       await v03Client.sendForText('hi')
       assert.equal(agent.calls[0].method, 'message/send')
       assert.equal(agent.calls[0].version, '0.3')
+      const body = agent.calls[0].params.message
+      assert.equal(body.kind, 'message')
+      assert.equal(body.role, 'user')
+      assert.equal(body.parts[0].kind, 'text')
     } finally {
       await agent.close()
     }
@@ -866,6 +878,23 @@ const main = async () => {
       const streamClient = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
       await streamClient.sendForText('hi', { preferStream: true })
       assert.deepEqual(agent.calls.map((call) => call.method), ['SendMessage'])
+    } finally {
+      await agent.close()
+    }
+  })
+
+  await test('A2aClient：v1.0 的 sendStream 提前报错，不发请求', async () => {
+    const agent = await startAgent({ ...v10Card, capabilities: { streaming: true } }, (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(rpcResult(req, completedV10)))
+    })
+    try {
+      const c = new A2aClient({ baseUrl: agent.origin, timeoutMs: 5000 })
+      await assert.rejects(
+        () => c.sendStream('x', () => {}),
+        (e) => e.code === -32601 && /v1\.0 streaming is not supported/.test(e.message),
+      )
+      assert.equal(agent.calls.length, 0)
     } finally {
       await agent.close()
     }
